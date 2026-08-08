@@ -1,0 +1,106 @@
+/* ------------------------------------------------------------------
+   DataGlitchCore — direction artistique « appareil de labo »
+   Palette relevée au pixel sur le kit de sliders de référence :
+   fond #191816, carte #262626, accent #FAA727, piste #535353, liseré #3F3F3F
+   Partagée par DataBender et DataMosher : ne rien mettre ici qui nomme
+   l'un des deux softs en particulier.
+   ------------------------------------------------------------------ */
+
+@font-face {
+    font-family: 'Montserrat';
+    /* Chemin relatif volontaire (pas de "/" en tête) : il se résout par
+       rapport à l'URL réelle de ce fichier CSS, qui change de préfixe selon
+       l'hôte (app web vs app desktop, cf. Assets[] dans App.razor). Un
+       chemin absolu codé en dur cassait le fallback système de la police. */
+    src: url('fonts/montserrat-latin.woff2') format('woff2');
+    font-weight: 400 800;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    /* fonds : noirs légèrement chauds, jamais bleutés */
+    --ink: #0E0D0C;
+    --ink-2: #131211;
+    --panel: #1B1A18;
+    --card: #262626;
+    --card-hi: #2E2D2C;
+
+    --line: #3F3F3F;
+    --line-soft: #2A2928;
+    /* le kit donne #535353, mais posé sur la carte il tombe à 2:1 :
+       remonté au minimum qui passe les 3:1 exigés pour un élément d'interface */
+    --track: #757575;
+
+    --amber: #FAA727;
+    --amber-hot: #FFC35C;
+    --amber-deep: #C97F12;
+    --amber-ghost: rgba(250, 167, 39, 0.14);
+
+    --text: #EDE8E0;
+    --text-dim: #A8A199;
+    /* remonté de #6B665F : en 9px capitales très espacées, le contraste
+       tombait sous 4:1 sur le noir et les libellés devenaient illisibles */
+    --text-faint: #837D75;
+    --bone: #FFF6E8;
+
+    --r-card: 3px;
+    --r-pill: 999px;
+
+    /* Montserrat n'a pas de chasse fixe : les nombres qui défilent sautent
+       sans font-variant-numeric */
+    --num: 'Montserrat', system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--ink);
+    color: var(--text);
+    font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
+    font-weight: 500;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+}
+
+::selection { background: var(--amber); color: #17150F; }
+
+/* barres de défilement dans le ton, sans casser le contraste */
+* { scrollbar-width: thin; scrollbar-color: #3A3937 transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #3A3937; border-radius: var(--r-pill); }
+*::-webkit-scrollbar-thumb:hover { background: #4E4C49; }
+
+:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+}
+
+#blazor-error-ui {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    display: none;
+    padding: 12px 20px;
+    background: var(--amber);
+    color: #17150F;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.6);
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    float: right;
+    font-size: 15px;
+}
+
+#blazor-error-ui a { color: #17150F; }

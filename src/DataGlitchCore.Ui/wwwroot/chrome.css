@@ -1,0 +1,895 @@
+/* ==================================================================
+   Coquille générique du studio : colonne de modules à gauche, écrans
+   à droite. Une seule couleur vive (l'ambre) — elle ne sert qu'à deux
+   choses : ce qui est actif, et ce qui est détruit. Tout le reste est
+   gris.
+
+   Extrait de DataBender (Home.razor.css) — la partie qui ne nomme rien
+   de spécifique à l'audio. Partagée par DataBender et DataMosher.
+
+   Volontairement un fichier global (wwwroot/chrome.css), pas une CSS
+   scoped Blazor : l'isolation de composant (`::deep`, le hash de scope)
+   est liée à un fichier .razor précis, et il n'existe pour l'instant
+   qu'un seul vrai consommateur (DataBender). Extraire de vrais
+   composants Razor partagés avant que DataMosher n'ait sa propre page
+   reviendrait à deviner sa structure DOM — reporté à l'étape UI de
+   DataMosher, une fois qu'on a deux usages réels à généraliser.
+
+   Ce qui reste volontairement en dehors (spécifique à l'audio, reste
+   dans Home.razor.css côté DataBender) : la troisième voie « spectro »
+   (.spectro-lane) et les repères de bande de fréquence (.band*).
+   ================================================================== */
+
+.studio {
+    display: grid;
+    grid-template-columns: 364px 1fr;
+    height: 100vh;
+    background: var(--ink);
+}
+
+/* ---------------- colonne gauche ---------------- */
+
+.rig {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--ink-2);
+    border-right: 1px solid var(--line-soft);
+}
+
+.brand {
+    padding: 22px 20px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--panel);
+}
+
+.brand h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--text);
+}
+
+.brand h1 em {
+    font-style: normal;
+    color: var(--amber);
+}
+
+.brand .sub {
+    margin-top: 7px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+.modules {
+    flex: 1 1 auto;
+    /* sans ça, un conteneur flex refuse de descendre sous la taille de son
+       contenu et le défilement ne s'enclenche jamais */
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Le liseré clair en haut de chaque carte est la signature du kit :
+   il détache la carte du noir sans avoir besoin d'une ombre. */
+/* Volontairement un <div> et non un <details> : ce dernier ne laisse pas son
+   contenu se contraindre à la hauteur disponible (ni en flex, ni en grid, ni
+   par max-height), et le corps débordait en silence au lieu de défiler. */
+.mod {
+    background: var(--card);
+    border-top: 1px solid var(--line);
+    border-radius: var(--r-card);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 0 0 auto; /* replié : juste l'entête */
+}
+
+/* Ouvert, un module cède de la hauteur quand plusieurs le sont en même temps,
+   mais jamais au point de devenir illisible : en dessous du plancher, c'est la
+   colonne entière qui prend le relais et défile. */
+.mod.open {
+    flex: 0 1 auto;
+    /* Plancher calé pour qu'à hauteur d'écran courante les quatre modules
+       ouverts tiennent dans la colonne sans la faire défiler : on garde alors
+       un seul niveau de défilement, à l'intérieur du module concerné. */
+    min-height: 156px;
+}
+
+.mod-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+    flex: 0 0 auto;
+    transition: background 0.14s ease;
+}
+
+.mod-head:hover { background: var(--card-hi); }
+
+.mod-title {
+    flex: 1;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.mod.open .mod-title { color: var(--amber); }
+
+.chev {
+    width: 15px;
+    height: 15px;
+    flex: none;
+    stroke: var(--amber);
+    stroke-width: 2.4;
+    stroke-linecap: square;
+    fill: none;
+    transition: transform 0.22s cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+.mod:not(.open) .chev { transform: rotate(180deg); }
+
+.mod-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    /* arrivé en bout de course, le scroll ne part pas emporter la colonne */
+    overscroll-behavior: contain;
+    padding: 4px 14px 8px;
+
+    /* Ombres de défilement : les deux premières couches sont ancrées au contenu
+       (local) et masquent les deux radiales ancrées à la boîte (scroll). Le
+       dégradé n'apparaît donc que du côté où il reste réellement à lire. */
+    background:
+        linear-gradient(var(--card) 30%, rgba(38, 38, 38, 0)) top / 100% 16px no-repeat local,
+        linear-gradient(rgba(38, 38, 38, 0), var(--card) 70%) bottom / 100% 16px no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0)) top / 100% 7px no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0)) bottom / 100% 7px no-repeat scroll;
+}
+
+/* l'ornement en trois points ferme chaque module, comme sur le kit */
+.mod-body::after {
+    content: '';
+    display: block;
+    height: 3px;
+    width: 22px;
+    margin: 14px auto 8px;
+    background: radial-gradient(circle, var(--text-faint) 45%, transparent 46%) 0 0 / 8px 3px repeat-x;
+    opacity: 0.5;
+}
+
+/* ---------------- contrôles ---------------- */
+
+.ctl { margin: 14px 0; }
+
+.ctl-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 9px;
+}
+
+.ctl-name {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.ctl-val {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--amber);
+    white-space: nowrap;
+}
+
+/* texte de lecture, pas de l'ornement : il lui faut un vrai contraste */
+.note {
+    margin-top: 8px;
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: #99928A;
+}
+
+/* --- slider : piste épaisse, gros bouton rond, bornes de part et d'autre --- */
+
+.sld {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.lim {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--text-faint);
+    flex: none;
+    min-width: 12px;
+    text-align: center;
+}
+
+.sld input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 18px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.sld input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: linear-gradient(90deg, var(--amber) 0 var(--pct, 0%), var(--track) var(--pct, 0%) 100%);
+}
+
+.sld input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -5px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--amber);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.sld input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.14); }
+
+.sld input[type="range"]:active::-webkit-slider-thumb {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 7px var(--amber-ghost);
+}
+
+/* Firefox remplit la piste tout seul, pas besoin de --pct */
+.sld input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: var(--track);
+}
+
+.sld input[type="range"]::-moz-range-progress {
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: var(--amber);
+}
+
+.sld input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--amber);
+}
+
+/* --- select --- */
+
+.pick {
+    position: relative;
+}
+
+.pick select {
+    width: 100%;
+    appearance: none;
+    background: var(--ink-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    padding: 10px 32px 10px 11px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.14s ease;
+}
+
+.pick select:hover { border-color: var(--amber-deep); }
+
+.pick::after {
+    content: '';
+    position: absolute;
+    right: 13px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin-top: -5px;
+    border-right: 2px solid var(--amber);
+    border-bottom: 2px solid var(--amber);
+    transform: rotate(45deg);
+    pointer-events: none;
+}
+
+.num {
+    width: 100%;
+    background: var(--ink-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    padding: 9px 11px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* --- case à cocher --- */
+
+.tick {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 11px 0;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.tick input {
+    appearance: none;
+    flex: none;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    border: 1.5px solid var(--track);
+    border-radius: 2px;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.tick input:checked {
+    background: var(--amber);
+    border-color: var(--amber);
+}
+
+.tick input:checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 0.5px;
+    width: 4px;
+    height: 8px;
+    border-right: 2px solid #17150F;
+    border-bottom: 2px solid #17150F;
+    transform: rotate(43deg);
+}
+
+.tick:hover input:not(:checked) { border-color: var(--amber-deep); }
+.tick input:checked + span { color: var(--text); }
+
+/* --- fichier --- */
+
+/* Fichier global (pas de CSS isolation Blazor ici) : pas besoin de ::deep,
+   le sélecteur atteint directement l'<input> du composant InputFile. */
+.drop input[type="file"] { display: none; }
+
+.drop label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    padding: 15px 12px;
+    border: 1px dashed var(--line);
+    border-radius: var(--r-card);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.drop label:hover {
+    border-color: var(--amber);
+    color: var(--amber);
+    background: var(--amber-ghost);
+}
+
+.meta {
+    margin-top: 12px;
+    font-size: 10.5px;
+    line-height: 1.75;
+    color: var(--text-faint);
+}
+
+.meta .name {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    word-break: break-all;
+    margin-bottom: 3px;
+}
+
+.meta .spec { color: var(--text-dim); }
+
+.warn {
+    display: block;
+    margin-top: 6px;
+    color: var(--amber);
+    font-weight: 600;
+}
+
+.alert {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--amber);
+    background: var(--amber-ghost);
+    color: var(--amber-hot);
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 600;
+}
+
+/* ---------------- pied : actions ---------------- */
+
+.deck {
+    flex: none;
+    padding: 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--line-soft);
+}
+
+.strike {
+    width: 100%;
+    padding: 14px;
+    border: 0;
+    border-radius: var(--r-card);
+    background: var(--amber);
+    color: #17150F;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.14s ease, transform 0.08s ease;
+}
+
+.strike:hover { background: var(--amber-hot); }
+.strike:active { transform: translateY(1px); }
+
+.row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.row button {
+    padding: 9px 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    background: transparent;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.row button:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+.row button:disabled { opacity: 0.3; cursor: default; }
+
+.readout {
+    margin-top: 11px;
+    font-size: 10.5px;
+    line-height: 1.6;
+    color: var(--text-dim);
+}
+
+.readout .tally {
+    color: var(--text-faint);
+    font-weight: 600;
+}
+
+/* ---------------- écrans ---------------- */
+
+.stage {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    padding: 14px;
+    background:
+        radial-gradient(120% 90% at 50% 0%, #1A1917 0%, var(--ink) 68%);
+}
+
+.blank {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-card);
+}
+
+.blank div {
+    max-width: 400px;
+    text-align: center;
+}
+
+.blank h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.blank p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.75;
+    color: var(--text-faint);
+}
+
+.viz {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-width: 0;
+}
+
+/* --- barre de vue : mini-carte + commandes de zoom --- */
+
+.viewbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.overview {
+    position: relative;
+    flex: 1 1 auto;
+    height: 34px;
+    min-width: 0;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-card);
+    background: #0A0908;
+    overflow: hidden;
+    cursor: grab;
+}
+
+.overview:active { cursor: grabbing; }
+
+.overview canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.ov-region {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(250, 167, 39, 0.16);
+    border-left: 1px solid rgba(250, 167, 39, 0.6);
+    border-right: 1px solid rgba(250, 167, 39, 0.6);
+    pointer-events: none;
+}
+
+/* la fenêtre visible : c'est le repère qui dit « vous êtes ici » */
+.ov-window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    min-width: 2px;
+    background: rgba(255, 246, 232, 0.10);
+    box-shadow: inset 0 0 0 1px var(--bone);
+    pointer-events: none;
+}
+
+.ov-head {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--bone);
+    opacity: 0.75;
+    pointer-events: none;
+}
+
+.zoomctl {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.zoomctl .axis { margin: 0 6px 0 0; }
+
+.zoomctl button {
+    min-width: 30px;
+    padding: 6px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    background: transparent;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.zoomctl button:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+.zoomctl button:disabled { opacity: 0.3; cursor: default; }
+
+.lanes {
+    position: relative;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-height: 0;
+}
+
+.lane {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-height: 0;
+}
+
+.lane-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex: none;
+}
+
+.tag {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.lane.active .tag { color: var(--amber); }
+
+.axis {
+    margin-left: auto;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+}
+
+.live {
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #17150F;
+    background: var(--amber);
+    padding: 2.5px 7px;
+    border-radius: var(--r-pill);
+}
+
+/* --- bouton de lecture --- */
+
+.cue {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--track);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.cue svg { width: 9px; height: 9px; fill: currentColor; }
+.cue:hover { border-color: var(--amber); color: var(--amber); }
+
+.lane.active .cue {
+    border-color: var(--amber);
+    color: var(--amber);
+}
+
+.lane.active .cue.on {
+    background: var(--amber);
+    color: #17150F;
+}
+
+/* --- surfaces de tracé --- */
+
+.screen {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 92px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-card);
+    background: #0A0908;
+    overflow: hidden;
+    cursor: crosshair;
+}
+
+.screen canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--bone);
+    box-shadow: 0 0 7px rgba(255, 246, 232, 0.85);
+    pointer-events: none;
+    display: none;
+}
+
+/* --- zone temporelle + boucle --- */
+
+.region {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.region .shade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(10, 9, 8, 0.68);
+}
+
+#dmShadeL { left: 0; width: 0; }
+#dmShadeR { right: 0; width: 0; }
+
+.region .handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--amber);
+    pointer-events: auto;
+    cursor: ew-resize;
+    touch-action: none;
+    filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.95));
+}
+
+/* zone de préhension large mais invisible */
+.region .handle::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -9px;
+    width: 20px;
+}
+
+.region .handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: -4px;
+    width: 10px;
+    height: 30px;
+    margin-top: -15px;
+    background: var(--amber);
+    border-radius: 2px;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+}
+
+.region .handle:hover::after { background: var(--amber-hot); }
+
+.loop-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(255, 246, 232, 0.045);
+    border-left: 1px dashed rgba(255, 246, 232, 0.55);
+    border-right: 1px dashed rgba(255, 246, 232, 0.55);
+    display: none;
+}
+
+body.dm-dragging { cursor: ew-resize; user-select: none; }
+
+/* --- bandeau du bas --- */
+
+.foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.keys {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 9.5px;
+    color: var(--text-faint);
+}
+
+/* dans une note, la touche doit rester dans le fil du texte */
+.note kbd {
+    padding: 0 4px;
+    font-size: 9.5px;
+    white-space: nowrap;
+}
+
+kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: var(--card);
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--text-dim);
+}
+
+.diff-screen {
+    flex: none;
+    height: 52px;
+    position: relative;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-card);
+    background: #0A0908;
+    overflow: hidden;
+}
+
+.diff-screen canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+@media (max-width: 900px) {
+    .studio { grid-template-columns: 1fr; height: auto; }
+    .rig { height: auto; }
+    .stage { min-height: 70vh; }
+}
