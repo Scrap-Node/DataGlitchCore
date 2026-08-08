@@ -112,6 +112,151 @@ public class CoreTests
         Assert.Equal(buf.Original.ToArray(), buf.Current.ToArray());
     }
 
+    // ---- DestructionMask (protection multi-régions, pour l'AVI) ----
+
+    [Fact]
+    public void Engine_With_No_Mask_Is_Identical_To_The_Legacy_Single_Range()
+    {
+        // La surcharge à HeaderInfo n'est plus qu'un adaptateur vers la
+        // surcharge à masque — ce test épingle que l'un et l'autre restent
+        // rigoureusement identiques, pas seulement "compatibles".
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 256).Select(i => (byte)i).ToArray());
+        var header = new HeaderInfo(PayloadStart: 44);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, Operator = DestructionOperator.Xor, ProtectHeader = true };
+
+        var viaHeader = DestructionEngine.BuildBatch(buf, opts, header);
+        var viaMask = DestructionEngine.BuildBatch(buf, opts, DestructionMask.FromPayloadStart(header.PayloadStart));
+
+        Assert.Equal(viaHeader.EditCount, viaMask.EditCount);
+        Assert.True(viaHeader.EditCount > 0);
+        for (int i = 0; i < viaHeader.EditCount; i++)
+        {
+            Assert.Equal(viaHeader.Edits[i].Offset, viaMask.Edits[i].Offset);
+            Assert.Equal(viaHeader.Edits[i].NewBytes, viaMask.Edits[i].NewBytes);
+        }
+    }
+
+    [Fact]
+    public void Engine_Multi_Region_Only_Edits_Inside_Regions()
+    {
+        var buf = FileBuffer.FromBytes("x", new byte[1024]);
+        var regions = new[] { new ByteRange(0, 100), new ByteRange(300, 350), new ByteRange(900, 1024) };
+        var mask = DestructionMask.FromRegions(regions);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 16, Operator = DestructionOperator.Fixed, FixedValue = 0xAA };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, mask);
+
+        Assert.NotEmpty(batch.Edits);
+        Assert.All(batch.Edits, e => Assert.Contains(regions, r => e.Offset >= r.Start && e.Offset + e.Length <= r.End));
+    }
+
+    [Fact]
+    public void Engine_Multi_Region_Leaves_Every_Protected_Byte_Untouched()
+    {
+        var original = Enumerable.Range(0, 1024).Select(i => (byte)i).ToArray();
+        var buf = FileBuffer.FromBytes("x", (byte[])original.Clone());
+        var regions = new[] { new ByteRange(0, 100), new ByteRange(300, 350), new ByteRange(900, 1024) };
+        var mask = DestructionMask.FromRegions(regions);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 16, Operator = DestructionOperator.Fixed, FixedValue = 0xAA };
+        var journal = new OperationJournal(buf);
+
+        journal.Apply(DestructionEngine.BuildBatch(buf, opts, mask));
+
+        var current = buf.Current.ToArray();
+        for (int i = 0; i < original.Length; i++)
+        {
+            bool inRegion = regions.Any(r => i >= r.Start && i < r.End);
+            if (!inRegion) Assert.Equal(original[i], current[i]);
+        }
+    }
+
+    [Fact]
+    public void Engine_ShiftBlock_Never_Reads_Outside_The_Destroyable_Regions()
+    {
+        // Un trou protégé rempli d'une sentinelle IMPAIRE, et un contenu
+        // destructible TOUJOURS PAIR ailleurs : si l'écho de ShiftBlock (qui
+        // lit "plus tôt") fuit hors des fenêtres, un octet impair apparaît
+        // dans un NewBytes — sans ambiguïté possible avec du contenu
+        // légitime, contrairement à un buffer uniformément nul (où l'écho ne
+        // changerait jamais rien, et où une sentinelle "normale" pourrait
+        // aussi apparaître par coïncidence dans le contenu réel).
+        var data = new byte[400];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 2) % 256);
+        for (int i = 100; i < 200; i++) data[i] = 0x5B; // trou protégé
+        var buf = FileBuffer.FromBytes("x", data);
+        var mask = DestructionMask.FromRegions([new ByteRange(0, 100), new ByteRange(200, 400)]);
+        var opts = new DestructionOptions
+        {
+            Seed = 3, Density = 1.0, BlockSize = 8, Operator = DestructionOperator.ShiftBlock, MaxShiftBlocks = 16,
+        };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, mask);
+
+        Assert.NotEmpty(batch.Edits);
+        Assert.All(batch.Edits, e => Assert.All(e.NewBytes, b => Assert.Equal(0, b % 2)));
+    }
+
+    [Fact]
+    public void Engine_Records_No_Edit_When_The_Block_Is_Unchanged()
+    {
+        // Une seule fenêtre = un seul bloc : l'écho de ShiftBlock n'a nulle
+        // part où lire "plus tôt" que lui-même, donc ne change rien.
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 8).Select(i => (byte)i).ToArray());
+        var mask = DestructionMask.FromRegions([new ByteRange(0, 8)]);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, Operator = DestructionOperator.ShiftBlock, MaxShiftBlocks = 4 };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, mask);
+
+        Assert.Empty(batch.Edits);
+    }
+
+    [Fact]
+    public void Mask_FromRegions_Normalises_Overlaps_And_Order()
+    {
+        var mask = DestructionMask.FromRegions(
+        [
+            new ByteRange(50, 100),
+            new ByteRange(0, 20),
+            new ByteRange(90, 120),   // chevauche la première
+            new ByteRange(120, 130),  // adjacente à la précédente, une fois fusionnée
+            new ByteRange(200, 190),  // inversée : ignorée
+            new ByteRange(300, 300),  // vide : ignorée
+        ]);
+
+        Assert.Equal([new ByteRange(0, 20), new ByteRange(50, 130)], mask.Regions);
+    }
+
+    [Fact]
+    public void Engine_ProtectHeader_Beyond_The_Targeted_Zone_Edits_Nothing()
+    {
+        // Bug latent de l'ancien modèle à un seul plancher : un PayloadStart
+        // situé APRÈS la zone ciblée par RegionEnd faisait échanger start/end
+        // et la destruction tombait alors À L'INTÉRIEUR du header prétendument
+        // protégé, au lieu de ne rien toucher.
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 256).Select(i => (byte)i).ToArray());
+        var header = new HeaderInfo(PayloadStart: 200);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, ProtectHeader = true, RegionStart = 0.0, RegionEnd = 0.5 };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, header);
+
+        Assert.Empty(batch.Edits);
+    }
+
+    [Fact]
+    public void Engine_ProtectHeader_Past_The_End_Of_The_Buffer_Edits_Nothing()
+    {
+        // Bug latent de l'ancien modèle : un PayloadStart au-delà de la
+        // taille du buffer faisait lever buffer.Read (offset hors bornes)
+        // au lieu de ne simplement rien avoir à détruire.
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 256).Select(i => (byte)i).ToArray());
+        var header = new HeaderInfo(PayloadStart: 9999);
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, ProtectHeader = true };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, header);
+
+        Assert.Empty(batch.Edits);
+    }
+
     // ---- ToRuns (post-traitement public, ex-privé sous DataBender) ----
 
     [Fact]

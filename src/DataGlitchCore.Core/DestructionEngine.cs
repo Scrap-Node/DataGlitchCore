@@ -9,47 +9,122 @@ namespace DataGlitchCore.Core;
 ///
 /// Entièrement agnostique au format du fichier — aucune notion de PCM, de trame
 /// vidéo ou de tout autre domaine. Un projet qui connaît son format (WAV, AVI…)
-/// construit le <see cref="HeaderInfo"/> qu'il lui passe, et peut affiner le
+/// construit le <see cref="DestructionMask"/> qu'il lui passe, et peut affiner le
 /// résultat après coup (par ex. confiner la dégradation à une bande de fréquences)
 /// en repartant des <see cref="DestructionBatch.Edits"/> renvoyés — voir
 /// <see cref="ToRuns"/>, conçu justement pour ce genre de post-traitement.
 /// </summary>
 public static class DestructionEngine
 {
+    /// <summary>
+    /// Surcharge historique : un plancher unique (<see cref="HeaderInfo.PayloadStart"/>),
+    /// adaptée en un <see cref="DestructionMask"/> équivalent. Conservée telle
+    /// quelle pour ne rien casser côté appelants existants (le WAV n'a qu'un
+    /// seul en-tête à protéger) — l'AVI, qui a besoin de plusieurs régions
+    /// entrelacées, passe directement par la surcharge à
+    /// <see cref="DestructionMask"/>.
+    /// </summary>
     public static DestructionBatch BuildBatch(FileBuffer buffer, DestructionOptions options, HeaderInfo? header = null)
+    {
+        var mask = options.ProtectHeader && header is not null
+            ? DestructionMask.FromPayloadStart(header.PayloadStart)
+            : DestructionMask.WholeBuffer;
+        return BuildBatch(buffer, options, mask);
+    }
+
+    /// <summary>
+    /// Construit une passe dans les limites d'un <see cref="DestructionMask"/> :
+    /// la zone ciblée par <see cref="DestructionOptions.RegionStart"/>/<see cref="DestructionOptions.RegionEnd"/>
+    /// est intersectée avec les régions du masque, ce qui donne une liste de
+    /// fenêtres disjointes — la boucle de blocs tourne à l'intérieur de
+    /// chacune, jamais en dehors. Avec un masque à une seule région non
+    /// bornée (<see cref="DestructionMask.WholeBuffer"/>,
+    /// <see cref="DestructionMask.FromPayloadStart"/>), le résultat est
+    /// identique bit à bit à l'ancien modèle à un seul plancher — ce n'est
+    /// pas une coïncidence, c'est la même formule qui dégénère en la même
+    /// plage unique.
+    /// </summary>
+    public static DestructionBatch BuildBatch(FileBuffer buffer, DestructionOptions options, DestructionMask mask)
     {
         int length = buffer.Length;
         int blockSize = Math.Max(1, options.BlockSize);
 
-        // zone ciblée, en octets
+        // zone ciblée, en octets — le masque, pas ce plancher, protège
         int start = (int)Math.Clamp(options.RegionStart * length, 0, length);
         int end = (int)Math.Clamp(options.RegionEnd * length, 0, length);
-        if (options.ProtectHeader && header is not null)
-            start = Math.Max(start, header.PayloadStart);
         if (end < start) (start, end) = (end, start);
+
+        var windows = IntersectWindows(start, end, mask, length);
+        if (windows.Count == 0) return new DestructionBatch(DescribeLabel(options), []);
+
+        // Espace-payload : les fenêtres mises bout à bout comme un buffer
+        // virtuel contigu, pour que ShiftBlock (l'écho) ne puisse jamais lire
+        // un octet protégé situé dans un trou entre deux fenêtres — voir
+        // PayloadSpace plus bas.
+        var cumulative = new int[windows.Count + 1];
+        for (int i = 0; i < windows.Count; i++) cumulative[i + 1] = cumulative[i] + windows[i].Length;
+        var space = new PayloadSpace(windows, cumulative);
 
         var rng = options.Seed is int s ? new Random(s) : new Random();
         int maxShift = Math.Max(1, options.MaxShiftBlocks);
         List<ByteEdit> edits = new();
 
-        for (int off = start; off < end; off += blockSize)
+        for (int w = 0; w < windows.Count; w++)
         {
-            int len = Math.Min(blockSize, end - off);
-            if (len <= 0) break;
-            if (rng.NextDouble() >= options.Density) continue;
+            var window = windows[w];
+            int windowVirtualStart = cumulative[w];
 
-            var oldBytes = buffer.Read(off, len);
-            var newBytes = Apply(buffer, options, rng, off, len, start, maxShift);
-            edits.Add(new ByteEdit(off, oldBytes, newBytes));
+            for (int off = window.Start; off < window.End; off += blockSize)
+            {
+                int len = Math.Min(blockSize, window.End - off);
+                if (rng.NextDouble() >= options.Density) continue;
+
+                int virtualOff = windowVirtualStart + (off - window.Start);
+                var oldBytes = buffer.Read(off, len);
+                var newBytes = Apply(buffer, options, rng, off, len, virtualOff, space, maxShift);
+
+                // Fenêtres par frame ⇒ beaucoup de blocs courts où l'opérateur
+                // ne change en fait rien (Reverse sur 1 octet, écho qui retombe
+                // sur lui-même…) : sans ce garde-fou, un ByteEdit sans le
+                // moindre changement gonflerait BytesChanged, allumerait
+                // DiffMap à tort et polluerait l'undo pour rien.
+                if (newBytes.AsSpan().SequenceEqual(oldBytes)) continue;
+
+                edits.Add(new ByteEdit(off, oldBytes, newBytes));
+            }
         }
 
         return new DestructionBatch(DescribeLabel(options), edits);
     }
 
     /// <summary>
+    /// Intersecte la zone ciblée <c>[start, end)</c> (déjà normalisée par
+    /// l'appelant — <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
+    /// y échange les bornes si <c>RegionStart &gt; RegionEnd</c>) avec les
+    /// régions du masque, ramenées à <c>[0, length)</c>. Le résultat est une
+    /// liste de fenêtres disjointes, potentiellement vide si la zone ciblée
+    /// et les régions protégées ne se recouvrent pas du tout — une intersection
+    /// vide est la bonne réponse dans ce cas, ce qui écarte le bug de l'ancien
+    /// modèle : là où un plancher appliqué APRÈS le calcul de la zone pouvait,
+    /// combiné à l'ancien échange de bornes, faire tomber la destruction À
+    /// L'INTÉRIEUR d'un en-tête prétendument protégé.
+    /// </summary>
+    private static List<ByteRange> IntersectWindows(int start, int end, DestructionMask mask, int length)
+    {
+        var windows = new List<ByteRange>();
+        foreach (var region in mask.ClampedTo(length))
+        {
+            int lo = Math.Max(start, region.Start);
+            int hi = Math.Min(end, region.End);
+            if (hi > lo) windows.Add(new ByteRange(lo, hi));
+        }
+        return windows;
+    }
+
+    /// <summary>
     /// Découpe un résultat en plages réellement modifiées, en comparant deux
     /// tampons octet à octet. Sert à construire un <see cref="DestructionBatch"/>
-    /// à la main quand on post-traite le résultat de <see cref="BuildBatch"/>
+    /// à la main quand on post-traite le résultat de <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
     /// (ex. filtrage fréquentiel côté audio) : sans ça, l'historique stockerait
     /// toute la zone même là où le post-traitement n'a rien laissé passer.
     /// </summary>
@@ -81,7 +156,7 @@ public static class DestructionEngine
         return runs;
     }
 
-    private static byte[] Apply(FileBuffer buffer, DestructionOptions o, Random rng, int off, int len, int rangeStart, int maxShift)
+    private static byte[] Apply(FileBuffer buffer, DestructionOptions o, Random rng, int off, int len, int virtualOff, PayloadSpace space, int maxShift)
     {
         var dst = new byte[len];
         switch (o.Operator)
@@ -123,9 +198,15 @@ public static class DestructionEngine
 
             case DestructionOperator.ShiftBlock:
             {
+                // L'écho travaille en espace-payload (voir PayloadSpace), pas
+                // en offsets fichier bruts : sinon "off - shift" pourrait
+                // tomber dans un trou protégé entre deux fenêtres et recopier
+                // un en-tête de chunk dans l'image. Avec une seule fenêtre,
+                // ceci dégénère exactement en Math.Max(rangeStart, off - shift)
+                // — le comportement historique.
                 int shift = rng.Next(1, maxShift + 1) * len;
-                int srcOff = Math.Max(rangeStart, off - shift);
-                buffer.ReadInto(srcOff, dst); // recopie des octets antérieurs (écho/traînée)
+                int virtualSrc = Math.Max(0, virtualOff - shift);
+                space.ReadInto(buffer, virtualSrc, dst);
                 break;
             }
 
@@ -144,5 +225,50 @@ public static class DestructionEngine
     {
         string seed = o.Seed is int s ? s.ToString() : "aléatoire";
         return $"{o.Operator} · densité {o.Density:P0} · bloc {o.BlockSize}o · seed {seed}";
+    }
+
+    /// <summary>
+    /// Vue "toutes les fenêtres mises bout à bout" d'un buffer troué par des
+    /// régions protégées — l'espace dans lequel <see cref="DestructionOperator.ShiftBlock"/>
+    /// calcule sa source d'écho, pour ne jamais pouvoir lire un octet hors
+    /// des fenêtres destructibles. <paramref name="cumulative"/>[i] est la
+    /// somme des longueurs des fenêtres avant l'indice i (donc le début, en
+    /// espace virtuel, de la fenêtre i) ; <c>cumulative.Length == windows.Count + 1</c>.
+    /// </summary>
+    private readonly struct PayloadSpace(IReadOnlyList<ByteRange> windows, int[] cumulative)
+    {
+        public void ReadInto(FileBuffer buffer, int virtualStart, Span<byte> dst)
+        {
+            int remaining = dst.Length;
+            int v = virtualStart;
+            int written = 0;
+            while (remaining > 0)
+            {
+                int idx = LocateWindowIndex(v);
+                int withinWindow = v - cumulative[idx];
+                int available = windows[idx].Length - withinWindow;
+                int take = Math.Min(remaining, available);
+
+                buffer.ReadInto(windows[idx].Start + withinWindow, dst.Slice(written, take));
+
+                written += take;
+                v += take;
+                remaining -= take;
+            }
+        }
+
+        /// <summary>Plus grand indice <c>i</c> tel que <c>cumulative[i] &lt;= virtualOffset</c>
+        /// — la fenêtre qui contient cette position virtuelle.</summary>
+        private int LocateWindowIndex(int virtualOffset)
+        {
+            int lo = 0, hi = windows.Count - 1, idx = 0;
+            while (lo <= hi)
+            {
+                int mid = (lo + hi) / 2;
+                if (cumulative[mid] <= virtualOffset) { idx = mid; lo = mid + 1; }
+                else hi = mid - 1;
+            }
+            return idx;
+        }
     }
 }
