@@ -1,30 +1,28 @@
 /* ==================================================================
    Coquille générique du studio : colonne de modules à gauche, écrans
-   à droite. Une seule couleur vive (l'ambre) — elle ne sert qu'à deux
-   choses : ce qui est actif, et ce qui est détruit. Tout le reste est
-   gris.
+   à droite. DA SCRAP UI — grunge assumé (grain, bords déchirés, ombres
+   dures, tampons), palette noir/brun/cuivre/bleu-gris/blanc, deux
+   thèmes. Le cuivre ne sert qu'à deux choses : ce qui est actif, et ce
+   qui est détruit. Tout le reste passe par l'encre neutre du thème.
 
-   Extrait de DataBender (Home.razor.css) — la partie qui ne nomme rien
-   de spécifique à l'audio. Partagée par DataBender et DataMosher.
-
-   Volontairement un fichier global (wwwroot/chrome.css), pas une CSS
-   scoped Blazor : l'isolation de composant (`::deep`, le hash de scope)
-   est liée à un fichier .razor précis, et il n'existe pour l'instant
-   qu'un seul vrai consommateur (DataBender). Extraire de vrais
-   composants Razor partagés avant que DataMosher n'ait sa propre page
-   reviendrait à deviner sa structure DOM — reporté à l'étape UI de
-   DataMosher, une fois qu'on a deux usages réels à généraliser.
-
-   Ce qui reste volontairement en dehors (spécifique à l'audio, reste
-   dans Home.razor.css côté DataBender) : la troisième voie « spectro »
+   Partagée par DataBender et DataMosher, via DataGlitchCore.Ui. Ce
+   qui reste volontairement en dehors (spécifique à l'audio, dans
+   Home.razor.css côté DataBender) : la troisième voie « spectro »
    (.spectro-lane) et les repères de bande de fréquence (.band*).
+
+   Maths de gabarit : la colonne gauche est passée de 364px à 384px
+   pour absorber les bordures 2px et les ombres dures des boutons
+   ghost SCRAP (voir .studio, .modules, .mod, .row button ci-dessous).
+   Les marges 4-14px restent volontairement en littéraux plutôt qu'en
+   --scrap-space-* : la densité instrumentale de ce panneau est une
+   propriété voulue, pas un oubli de tokenisation — ne pas « ranger ».
    ================================================================== */
 
 .studio {
     display: grid;
-    grid-template-columns: 364px 1fr;
+    grid-template-columns: 384px 1fr;
     height: 100vh;
-    background: var(--ink);
+    background: var(--scrap-bg);
 }
 
 /* ---------------- colonne gauche ---------------- */
@@ -33,38 +31,99 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--ink-2);
-    border-right: 1px solid var(--line-soft);
+    background: var(--scrap-bg-alt);
+    border-right: var(--scrap-border-w) solid var(--scrap-border);
 }
 
 .brand {
-    padding: 22px 20px 16px;
-    border-bottom: 1px solid var(--line-soft);
-    background: var(--panel);
+    position: relative;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    column-gap: 12px;
+    align-items: center;
+    /* le padding bas dégage la morsure du bord déchiré (14px max) */
+    padding: 20px 20px calc(16px + 14px);
+    background: var(--scrap-bark);
+    color: var(--scrap-white);
+    clip-path: polygon(
+        0 0, 100% 0, 100% calc(100% - 14px), 96% 100%, 91% calc(100% - 10px),
+        85% calc(100% - 2px), 78% calc(100% - 12px), 70% calc(100% - 5px),
+        62% calc(100% - 14px), 53% calc(100% - 4px), 45% calc(100% - 11px),
+        37% calc(100% - 2px), 29% calc(100% - 13px), 21% calc(100% - 6px),
+        13% calc(100% - 12px), 6% calc(100% - 3px), 0 calc(100% - 10px)
+    );
+}
+
+.brand::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--scrap-texture-opacity);
+    background-image: var(--scrap-grain);
+}
+
+/* slot logo : seul élément propre à chaque projet — vide ici, à
+   remplir projet par projet. */
+.brand .mark {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    height: 34px;
+    width: auto;
+    display: block;
 }
 
 .brand h1 {
+    grid-column: 2;
+    grid-row: 1;
     margin: 0;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
     font-size: 21px;
-    font-weight: 800;
     letter-spacing: -0.02em;
+    text-transform: uppercase;
     line-height: 1;
-    color: var(--text);
+    color: var(--scrap-white);
+    transform: rotate(-1deg);
+    transform-origin: left center;
+    position: relative;
 }
 
+/* cuivre sur brun à 21px/900 : 2.95:1, au-dessus de la ligne 3:1 du
+   grand texte gras — ne pas réutiliser cette paire sous 18px. */
 .brand h1 em {
     font-style: normal;
-    color: var(--amber);
+    color: var(--scrap-copper);
 }
 
 .brand .sub {
+    grid-column: 2;
+    grid-row: 2;
     margin-top: 7px;
-    font-size: 9px;
+    font-family: var(--scrap-font-display);
+    font-size: var(--scrap-fs-nano);
     font-weight: 700;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--text-faint);
+    color: rgba(255, 255, 255, 0.72);
 }
+
+.brand .theme-toggle {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    display: inline-flex;
+    align-self: center;
+    padding: 0.5em;
+    background: transparent;
+    color: inherit;
+    border: var(--scrap-border-w) solid currentColor;
+    border-radius: var(--scrap-radius);
+    cursor: pointer;
+    transform: rotate(2deg);
+    transition: transform var(--scrap-transition);
+}
+
+.brand .theme-toggle:hover { transform: rotate(-2deg) scale(1.05); }
 
 .modules {
     flex: 1 1 auto;
@@ -72,26 +131,38 @@
        contenu et le défilement ne s'enclenche jamais */
     min-height: 0;
     overflow-y: auto;
-    padding: 10px;
+    /* overflow-y:auto force le calcul de overflow-x : sans le figer à
+       hidden, l'ombre dure de .mod lève une barre horizontale. */
+    overflow-x: hidden;
+    padding: 10px 14px 10px 10px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
 }
 
-/* Le liseré clair en haut de chaque carte est la signature du kit :
-   il détache la carte du noir sans avoir besoin d'une ombre. */
 /* Volontairement un <div> et non un <details> : ce dernier ne laisse pas son
    contenu se contraindre à la hauteur disponible (ni en flex, ni en grid, ni
    par max-height), et le corps débordait en silence au lieu de défiler. */
 .mod {
-    background: var(--card);
-    border-top: 1px solid var(--line);
-    border-radius: var(--r-card);
+    position: relative;
+    background: var(--scrap-surface);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    box-shadow: var(--scrap-shadow-sm);
     overflow: hidden;
     display: flex;
     flex-direction: column;
     min-height: 0;
     flex: 0 0 auto; /* replié : juste l'entête */
+}
+
+.mod::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--scrap-texture-opacity);
+    background-image: var(--scrap-grain);
 }
 
 /* Ouvert, un module cède de la hauteur quand plusieurs le sont en même temps,
@@ -101,8 +172,9 @@
     flex: 0 1 auto;
     /* Plancher calé pour qu'à hauteur d'écran courante les quatre modules
        ouverts tiennent dans la colonne sans la faire défiler : on garde alors
-       un seul niveau de défilement, à l'intérieur du module concerné. */
-    min-height: 156px;
+       un seul niveau de défilement, à l'intérieur du module concerné.
+       Remesuré après le passage aux bordures 2px + rivets du mod-head. */
+    min-height: 164px;
 }
 
 .mod-head {
@@ -110,37 +182,65 @@
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 12px 14px;
+    padding: var(--scrap-space-2) var(--scrap-space-3);
     border: 0;
-    background: transparent;
+    background: var(--scrap-bg-alt);
     font-family: inherit;
     text-align: left;
     cursor: pointer;
     user-select: none;
     flex: 0 0 auto;
+    position: relative;
     transition: background 0.14s ease;
 }
 
-.mod-head:hover { background: var(--card-hi); }
+.mod-head:hover { background: var(--scrap-border-soft); }
+
+/* Ouvert : la card-head SCRAP, sur l'encre forte du thème (noire en clair,
+   blanche en sombre) — écart voulu vis-à-vis de card.ts, qui l'utilise
+   toujours : avec 4+ modules empilés, un ink-strong permanent donnerait
+   quatre barres pleines en sombre. Le lier à l'état ouvert en fait aussi
+   un signal d'accordéon plus fort que l'ancien titre ambre. */
+.mod.open .mod-head {
+    background: var(--scrap-ink-strong);
+    border-bottom: var(--scrap-border-w) solid var(--scrap-border);
+}
+
+.mod.open .mod-head:hover { background: var(--scrap-ink-strong); }
+
+/* Rivets cuivre flanquant l'entête ouverte — en CSS pur, zéro balisage
+   Razor à ajouter. */
+.mod.open .mod-head::before,
+.mod.open .mod-head::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--scrap-copper);
+    flex: none;
+}
 
 .mod-title {
     flex: 1;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.2em;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-micro);
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--scrap-ink-muted);
 }
 
-.mod.open .mod-title { color: var(--amber); }
+/* sur ink-strong, l'encre qui contraste est --scrap-bg : blanc en clair,
+   quasi noir en sombre — l'inversion exacte dont on a besoin. */
+.mod.open .mod-title { color: var(--scrap-bg); }
 
 .chev {
     width: 15px;
     height: 15px;
     flex: none;
-    stroke: var(--amber);
-    stroke-width: 2.4;
-    stroke-linecap: square;
+    stroke: var(--scrap-accent);
+    stroke-width: 3;
+    stroke-linecap: butt;
     fill: none;
     transition: transform 0.22s cubic-bezier(0.3, 0, 0.2, 1);
 }
@@ -157,23 +257,32 @@
 
     /* Ombres de défilement : les deux premières couches sont ancrées au contenu
        (local) et masquent les deux radiales ancrées à la boîte (scroll). Le
-       dégradé n'apparaît donc que du côté où il reste réellement à lire. */
+       dégradé n'apparaît donc que du côté où il reste réellement à lire.
+       --scrap-surface-0 est un jumeau alpha-0 explicite de --scrap-surface
+       (pas color-mix) : cette déclaration ne doit jamais être perdue sur un
+       WebKit ancien, la scroller en a vraiment besoin. */
     background:
-        linear-gradient(var(--card) 30%, rgba(38, 38, 38, 0)) top / 100% 16px no-repeat local,
-        linear-gradient(rgba(38, 38, 38, 0), var(--card) 70%) bottom / 100% 16px no-repeat local,
-        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0)) top / 100% 7px no-repeat scroll,
-        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0)) bottom / 100% 7px no-repeat scroll;
+        linear-gradient(var(--scrap-surface) 30%, var(--scrap-surface-0)) top / 100% 16px no-repeat local,
+        linear-gradient(var(--scrap-surface-0), var(--scrap-surface) 70%) bottom / 100% 16px no-repeat local,
+        radial-gradient(farthest-side at 50% 0, var(--scrap-scroll-cue), transparent) top / 100% 7px no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, var(--scrap-scroll-cue), transparent) bottom / 100% 7px no-repeat scroll;
 }
 
-/* l'ornement en trois points ferme chaque module, comme sur le kit */
+/* le coup de pinceau qui ferme chaque module, à la place des trois points */
 .mod-body::after {
     content: '';
     display: block;
-    height: 3px;
-    width: 22px;
+    height: 6px;
+    width: 60%;
     margin: 14px auto 8px;
-    background: radial-gradient(circle, var(--text-faint) 45%, transparent 46%) 0 0 / 8px 3px repeat-x;
-    opacity: 0.5;
+    background: currentColor;
+    color: var(--scrap-border-soft);
+    clip-path: polygon(
+        0 40%, 8% 10%, 20% 55%, 33% 20%, 47% 70%, 60% 15%,
+        72% 60%, 85% 25%, 100% 50%, 100% 80%, 84% 55%, 70% 95%,
+        55% 45%, 41% 100%, 28% 60%, 14% 90%, 0 70%
+    );
+    opacity: 0.6;
 }
 
 /* ---------------- contrôles ---------------- */
@@ -185,33 +294,35 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 10px;
-    margin-bottom: 9px;
+    margin-bottom: 6px;
 }
 
 .ctl-name {
-    font-size: 10px;
-    font-weight: 600;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-micro);
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--scrap-ink);
 }
 
 .ctl-val {
+    font-family: var(--scrap-font-num);
     font-size: 12px;
     font-weight: 700;
-    color: var(--amber);
+    color: var(--scrap-accent-text);
     white-space: nowrap;
 }
 
 /* texte de lecture, pas de l'ornement : il lui faut un vrai contraste */
 .note {
     margin-top: 8px;
-    font-size: 10.5px;
+    font-size: var(--scrap-fs-mini);
     line-height: 1.55;
-    color: #99928A;
+    color: var(--scrap-ink-muted);
 }
 
-/* --- slider : piste épaisse, gros bouton rond, bornes de part et d'autre --- */
+/* --- slider : piste fine, gros bouton rond bordé, bornes de part et d'autre --- */
 
 .sld {
     display: flex;
@@ -220,9 +331,10 @@
 }
 
 .lim {
-    font-size: 9.5px;
-    font-weight: 600;
-    color: var(--text-faint);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-nano);
+    color: var(--scrap-ink-muted);
     flex: none;
     min-width: 12px;
     text-align: center;
@@ -233,56 +345,58 @@
     appearance: none;
     flex: 1 1 auto;
     min-width: 0;
-    height: 18px;
+    /* une poignée 18px bordée 2px + ombre dure réclame plus de boîte que
+       l'ancienne piste ; --pct reste un pourcentage, pas un ratio (voir
+       Pct() côté C#, 18 sites d'appel — pas de raison de renommer en
+       --fill façon scrap-ui pour ça). */
+    height: 26px;
     margin: 0;
     background: transparent;
     cursor: pointer;
 }
 
 .sld input[type="range"]::-webkit-slider-runnable-track {
-    height: 6px;
-    border-radius: var(--r-pill);
-    background: linear-gradient(90deg, var(--amber) 0 var(--pct, 0%), var(--track) var(--pct, 0%) 100%);
+    height: 5px;
+    border-radius: var(--scrap-radius);
+    background: linear-gradient(90deg, var(--scrap-accent) 0 var(--pct, 0%), var(--scrap-border-soft) var(--pct, 0%) 100%);
 }
 
 .sld input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 16px;
-    height: 16px;
-    margin-top: -5px;
-    border: 0;
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
     border-radius: 50%;
-    background: var(--amber);
-    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    background: var(--scrap-accent);
+    box-shadow: 2px 2px 0 var(--scrap-border);
+    transition: transform 0.12s ease;
 }
 
-.sld input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.14); }
-
-.sld input[type="range"]:active::-webkit-slider-thumb {
-    transform: scale(1.25);
-    box-shadow: 0 0 0 7px var(--amber-ghost);
-}
+.sld input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+.sld input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.95); }
 
 /* Firefox remplit la piste tout seul, pas besoin de --pct */
 .sld input[type="range"]::-moz-range-track {
-    height: 6px;
-    border-radius: var(--r-pill);
-    background: var(--track);
+    height: 5px;
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-border-soft);
 }
 
 .sld input[type="range"]::-moz-range-progress {
-    height: 6px;
-    border-radius: var(--r-pill);
-    background: var(--amber);
+    height: 5px;
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-accent);
 }
 
 .sld input[type="range"]::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border: 0;
+    width: 18px;
+    height: 18px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
     border-radius: 50%;
-    background: var(--amber);
+    background: var(--scrap-accent);
+    box-shadow: 2px 2px 0 var(--scrap-border);
 }
 
 /* --- select --- */
@@ -294,56 +408,50 @@
 .pick select {
     width: 100%;
     appearance: none;
-    background: var(--ink-2);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: var(--r-card);
-    padding: 10px 32px 10px 11px;
-    font-family: inherit;
+    background: var(--scrap-bg-alt);
+    color: var(--scrap-ink);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    padding: 9px 34px 9px 11px;
+    font-family: var(--scrap-font-body);
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
-    transition: border-color 0.14s ease;
+    /* chevron anguleux cuivre — remplace .pick::after, ne pas garder les deux */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='10'%3E%3Cpath d='M1 1h12L7 9 1 1Z' fill='%23956140'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.8em center;
+    transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
-.pick select:hover { border-color: var(--amber-deep); }
-
-.pick::after {
-    content: '';
-    position: absolute;
-    right: 13px;
-    top: 50%;
-    width: 6px;
-    height: 6px;
-    margin-top: -5px;
-    border-right: 2px solid var(--amber);
-    border-bottom: 2px solid var(--amber);
-    transform: rotate(45deg);
-    pointer-events: none;
-}
+.pick select:hover { border-color: var(--scrap-accent); }
+.pick select:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
 
 .num {
     width: 100%;
-    background: var(--ink-2);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: var(--r-card);
+    background: var(--scrap-bg-alt);
+    color: var(--scrap-ink);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
     padding: 9px 11px;
-    font-family: inherit;
+    font-family: var(--scrap-font-num);
     font-size: 12px;
     font-weight: 600;
+    transition: box-shadow 0.14s ease;
 }
 
-/* --- case à cocher --- */
+.num:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
+
+/* --- case à cocher : coche au marqueur, désaxée --- */
 
 .tick {
     display: flex;
     align-items: center;
     gap: 10px;
     margin: 11px 0;
-    font-size: 11.5px;
+    font-size: var(--scrap-fs-mini);
     font-weight: 500;
-    color: var(--text-dim);
+    color: var(--scrap-ink-muted);
     cursor: pointer;
     user-select: none;
 }
@@ -354,33 +462,29 @@
     width: 15px;
     height: 15px;
     margin: 0;
-    border: 1.5px solid var(--track);
-    border-radius: 2px;
-    background: transparent;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-bg-alt);
     cursor: pointer;
-    position: relative;
+    display: inline-grid;
+    place-content: center;
+    transform: rotate(-2deg);
     transition: background 0.14s ease, border-color 0.14s ease;
 }
 
-.tick input:checked {
-    background: var(--amber);
-    border-color: var(--amber);
-}
-
-.tick input:checked::after {
+.tick input::before {
     content: '';
-    position: absolute;
-    left: 4px;
-    top: 0.5px;
-    width: 4px;
-    height: 8px;
-    border-right: 2px solid #17150F;
-    border-bottom: 2px solid #17150F;
-    transform: rotate(43deg);
+    width: 10px;
+    height: 10px;
+    background: var(--scrap-accent);
+    transform: scale(0) rotate(8deg);
+    transition: transform 120ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+    clip-path: polygon(14% 52%, 30% 40%, 44% 62%, 82% 8%, 98% 20%, 46% 96%, 4% 66%);
 }
 
-.tick:hover input:not(:checked) { border-color: var(--amber-deep); }
-.tick input:checked + span { color: var(--text); }
+.tick input:checked::before { transform: scale(1.15) rotate(8deg); }
+.tick:hover input:not(:checked) { border-color: var(--scrap-accent); }
+.tick input:checked + span { color: var(--scrap-ink); }
 
 /* --- fichier --- */
 
@@ -394,57 +498,64 @@
     justify-content: center;
     gap: 9px;
     padding: 15px 12px;
-    border: 1px dashed var(--line);
-    border-radius: var(--r-card);
-    font-size: 10px;
-    font-weight: 700;
+    border: var(--scrap-border-w) dashed var(--scrap-border-soft);
+    border-radius: var(--scrap-radius);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-micro);
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--scrap-ink);
     cursor: pointer;
     transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
 }
 
 .drop label:hover {
-    border-color: var(--amber);
-    color: var(--amber);
-    background: var(--amber-ghost);
+    border-color: var(--scrap-accent);
+    color: var(--scrap-accent-text);
+    background: color-mix(in srgb, var(--scrap-accent) 10%, transparent);
 }
 
 .meta {
     margin-top: 12px;
-    font-size: 10.5px;
+    font-size: var(--scrap-fs-mini);
     line-height: 1.75;
-    color: var(--text-faint);
+    color: var(--scrap-ink-muted);
 }
 
 .meta .name {
     display: block;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
     font-size: 12px;
-    font-weight: 700;
-    color: var(--text);
+    color: var(--scrap-ink-strong);
     word-break: break-all;
     margin-bottom: 3px;
 }
 
-.meta .spec { color: var(--text-dim); }
+.meta .spec { font-family: var(--scrap-font-num); color: var(--scrap-ink-muted); }
 
 .warn {
     display: block;
     margin-top: 6px;
-    color: var(--amber);
-    font-weight: 600;
+    color: var(--scrap-warning-text);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    letter-spacing: 0.06em;
 }
 
 .alert {
     margin-top: 12px;
     padding: 10px 12px;
-    border-left: 3px solid var(--amber);
-    background: var(--amber-ghost);
-    color: var(--amber-hot);
+    border: var(--scrap-border-w) solid var(--scrap-danger);
+    border-left-width: 6px;
+    border-radius: var(--scrap-radius);
+    background: color-mix(in srgb, var(--scrap-danger) 12%, transparent);
+    box-shadow: var(--scrap-shadow-sm);
+    color: var(--scrap-danger-text);
     font-size: 11px;
     line-height: 1.5;
-    font-weight: 600;
+    font-weight: 700;
 }
 
 /* ---------------- pied : actions ---------------- */
@@ -452,28 +563,30 @@
 .deck {
     flex: none;
     padding: 12px;
-    background: var(--panel);
-    border-top: 1px solid var(--line-soft);
+    background: var(--scrap-bg-alt);
+    border-top: var(--scrap-border-w) solid var(--scrap-border);
 }
 
 .strike {
     width: 100%;
     padding: 14px;
-    border: 0;
-    border-radius: var(--r-card);
-    background: var(--amber);
-    color: #17150F;
-    font-family: inherit;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-accent);
+    color: var(--scrap-accent-ink);
+    font-family: var(--scrap-font-display);
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 900;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: background 0.14s ease, transform 0.08s ease;
+    box-shadow: var(--scrap-shadow);
+    transition: transform var(--scrap-transition), box-shadow var(--scrap-transition);
 }
 
-.strike:hover { background: var(--amber-hot); }
-.strike:active { transform: translateY(1px); }
+.strike:hover { transform: translate(-2px, -2px); box-shadow: var(--scrap-shadow-hover); }
+.strike:active { transform: translate(3px, 3px); box-shadow: var(--scrap-shadow-press); }
+.strike:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: var(--scrap-shadow); }
 
 .row {
     display: grid;
@@ -483,32 +596,43 @@
 }
 
 .row button {
-    padding: 9px 4px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-card);
+    padding: 9px 3px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
     background: transparent;
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    color: var(--scrap-ink-strong);
+    font-family: var(--scrap-font-display);
+    font-size: var(--scrap-fs-nano);
+    font-weight: 900;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: border-color 0.14s ease, color 0.14s ease;
+    box-shadow: var(--scrap-shadow-sm);
+    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
 }
 
-.row button:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
-.row button:disabled { opacity: 0.3; cursor: default; }
+/* décalages divisés par deux par rapport au bouton primaire : un
+   soulèvement de 6px sur un bouton de ~70px dans une grille à gouttière
+   6px chevaucherait son voisin. */
+.row button:hover:not(:disabled) {
+    border-color: var(--scrap-accent);
+    color: var(--scrap-accent-text);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--scrap-border);
+}
+.row button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
+.row button:disabled { opacity: 0.3; cursor: default; transform: none; }
 
 .readout {
     margin-top: 11px;
-    font-size: 10.5px;
+    font-size: var(--scrap-fs-mini);
     line-height: 1.6;
-    color: var(--text-dim);
+    color: var(--scrap-ink-muted);
 }
 
 .readout .tally {
-    color: var(--text-faint);
+    font-family: var(--scrap-font-num);
+    color: var(--scrap-ink);
     font-weight: 600;
 }
 
@@ -519,16 +643,25 @@
     display: flex;
     min-width: 0;
     padding: 14px;
-    background:
-        radial-gradient(120% 90% at 50% 0%, #1A1917 0%, var(--ink) 68%);
+    background: var(--scrap-bg);
+}
+
+.stage::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--scrap-texture-opacity);
+    background-image: var(--scrap-grain);
 }
 
 .blank {
+    position: relative;
     flex: 1;
     display: grid;
     place-items: center;
-    border: 1px solid var(--line-soft);
-    border-radius: var(--r-card);
+    border: var(--scrap-border-w) dashed var(--scrap-border-soft);
+    border-radius: var(--scrap-radius);
 }
 
 .blank div {
@@ -538,18 +671,21 @@
 
 .blank h2 {
     margin: 0 0 12px;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
     font-size: 13px;
-    font-weight: 800;
-    letter-spacing: 0.2em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--scrap-ink);
+    transform: rotate(-1deg);
 }
 
 .blank p {
     margin: 0;
     font-size: 12px;
     line-height: 1.75;
-    color: var(--text-faint);
+    color: var(--scrap-ink-muted);
+    max-width: 40ch;
 }
 
 .viz {
@@ -572,11 +708,11 @@
 .overview {
     position: relative;
     flex: 1 1 auto;
-    height: 34px;
+    height: 36px;
     min-width: 0;
-    border: 1px solid var(--line-soft);
-    border-radius: var(--r-card);
-    background: #0A0908;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-screen);
     overflow: hidden;
     cursor: grab;
 }
@@ -595,9 +731,9 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(250, 167, 39, 0.16);
-    border-left: 1px solid rgba(250, 167, 39, 0.6);
-    border-right: 1px solid rgba(250, 167, 39, 0.6);
+    background: color-mix(in srgb, var(--scrap-accent) 18%, transparent);
+    border-left: var(--scrap-border-w) solid var(--scrap-accent);
+    border-right: var(--scrap-border-w) solid var(--scrap-accent);
     pointer-events: none;
 }
 
@@ -607,8 +743,8 @@
     top: 0;
     bottom: 0;
     min-width: 2px;
-    background: rgba(255, 246, 232, 0.10);
-    box-shadow: inset 0 0 0 1px var(--bone);
+    background: color-mix(in srgb, var(--scrap-screen-ink) 8%, transparent);
+    box-shadow: inset 0 0 0 var(--scrap-border-w) var(--scrap-screen-ink);
     pointer-events: none;
 }
 
@@ -616,9 +752,9 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 1px;
-    background: var(--bone);
-    opacity: 0.75;
+    width: 2px;
+    background: var(--scrap-screen-ink);
+    opacity: 0.8;
     pointer-events: none;
 }
 
@@ -634,21 +770,28 @@
 .zoomctl button {
     min-width: 30px;
     padding: 6px 9px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-card);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
     background: transparent;
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    color: var(--scrap-ink-strong);
+    font-family: var(--scrap-font-display);
+    font-size: var(--scrap-fs-nano);
+    font-weight: 900;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: border-color 0.14s ease, color 0.14s ease;
+    box-shadow: var(--scrap-shadow-sm);
+    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
 }
 
-.zoomctl button:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
-.zoomctl button:disabled { opacity: 0.3; cursor: default; }
+.zoomctl button:hover:not(:disabled) {
+    border-color: var(--scrap-accent);
+    color: var(--scrap-accent-text);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--scrap-border);
+}
+.zoomctl button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
+.zoomctl button:disabled { opacity: 0.3; cursor: default; transform: none; }
 
 .lanes {
     position: relative;
@@ -675,62 +818,73 @@
 }
 
 .tag {
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.2em;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-nano);
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--scrap-ink);
 }
 
-.lane.active .tag { color: var(--amber); }
+.lane.active .tag { color: var(--scrap-accent-text); }
 
 .axis {
     margin-left: auto;
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    color: var(--text-faint);
+    font-family: var(--scrap-font-num);
+    font-size: var(--scrap-fs-nano);
+    color: var(--scrap-ink-muted);
 }
 
+/* tampon plein : indicateur d'état vivant, pas étiquette de catégorie */
 .live {
-    font-size: 8.5px;
-    font-weight: 800;
+    font-family: var(--scrap-font-display);
+    font-size: var(--scrap-fs-nano);
+    font-weight: 900;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #17150F;
-    background: var(--amber);
-    padding: 2.5px 7px;
-    border-radius: var(--r-pill);
+    color: var(--scrap-accent-ink);
+    background: var(--scrap-accent);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    padding: 2px 7px;
+    transform: rotate(-2deg);
+    animation: scrap-stamp-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .live { animation: none; }
 }
 
 /* --- bouton de lecture --- */
 
 .cue {
     flex: none;
-    width: 26px;
-    height: 26px;
+    width: 28px;
+    height: 28px;
     padding: 0;
-    border: 1px solid var(--track);
+    border: var(--scrap-border-w) solid var(--scrap-border);
     border-radius: 50%;
     background: transparent;
-    color: var(--text-dim);
+    color: var(--scrap-ink);
     cursor: pointer;
     display: grid;
     place-items: center;
-    transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+    box-shadow: var(--scrap-shadow-sm);
+    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
 }
 
 .cue svg { width: 9px; height: 9px; fill: currentColor; }
-.cue:hover { border-color: var(--amber); color: var(--amber); }
+.cue:hover { border-color: var(--scrap-accent); color: var(--scrap-accent-text); }
+.cue:active { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
 
 .lane.active .cue {
-    border-color: var(--amber);
-    color: var(--amber);
+    border-color: var(--scrap-accent);
+    color: var(--scrap-accent-text);
 }
 
 .lane.active .cue.on {
-    background: var(--amber);
-    color: #17150F;
+    background: var(--scrap-accent);
+    color: var(--scrap-accent-ink);
 }
 
 /* --- surfaces de tracé --- */
@@ -738,12 +892,25 @@
 .screen {
     position: relative;
     flex: 1 1 auto;
-    min-height: 92px;
-    border: 1px solid var(--line-soft);
-    border-radius: var(--r-card);
-    background: #0A0908;
+    min-height: 94px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-screen);
     overflow: hidden;
     cursor: crosshair;
+}
+
+/* Un écran est une fenêtre, pas une plaque soulevée : pas d'ombre portée
+   (4px dans une gouttière de 9px se cognerait). Grain en dernier dans
+   l'ordre source pour peindre au-dessus du canvas et de la tête de
+   lecture ; pointer-events:none pour ne pas bloquer les poignées. */
+.screen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--scrap-texture-opacity);
+    background-image: var(--scrap-grain);
 }
 
 .screen canvas {
@@ -758,9 +925,8 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 1px;
-    background: var(--bone);
-    box-shadow: 0 0 7px rgba(255, 246, 232, 0.85);
+    width: 2px;
+    background: var(--scrap-screen-ink);
     pointer-events: none;
     display: none;
 }
@@ -777,7 +943,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(10, 9, 8, 0.68);
+    background: var(--scrap-shade);
 }
 
 #dmShadeL { left: 0; width: 0; }
@@ -787,13 +953,12 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 2px;
+    width: var(--scrap-border-w);
     margin-left: -1px;
-    background: var(--amber);
+    background: var(--scrap-accent);
     pointer-events: auto;
     cursor: ew-resize;
     touch-action: none;
-    filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.95));
 }
 
 /* zone de préhension large mais invisible */
@@ -810,24 +975,28 @@
     content: '';
     position: absolute;
     top: 50%;
-    left: -4px;
-    width: 10px;
+    left: -5px;
+    width: 12px;
     height: 30px;
     margin-top: -15px;
-    background: var(--amber);
-    border-radius: 2px;
-    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+    background: var(--scrap-accent);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    box-shadow: 2px 2px 0 var(--scrap-border);
 }
 
-.region .handle:hover::after { background: var(--amber-hot); }
+/* le survol s'assombrit en clair et s'éclaircit en sombre — asymétrie
+   volontaire (« appuyé plus fort » vs « plus chaud »), préférable à un
+   cinquième token d'accent pour un seul état de survol. */
+.region .handle:hover::after { background: var(--scrap-accent-text); }
 
 .loop-zone {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(255, 246, 232, 0.045);
-    border-left: 1px dashed rgba(255, 246, 232, 0.55);
-    border-right: 1px dashed rgba(255, 246, 232, 0.55);
+    background: color-mix(in srgb, var(--scrap-screen-ink) 5%, transparent);
+    border-left: var(--scrap-border-w) dashed var(--scrap-screen-ink);
+    border-right: var(--scrap-border-w) dashed var(--scrap-screen-ink);
     display: none;
 }
 
@@ -847,36 +1016,40 @@ body.dm-dragging { cursor: ew-resize; user-select: none; }
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: 9.5px;
-    color: var(--text-faint);
+    font-family: var(--scrap-font-display);
+    font-weight: 700;
+    font-size: var(--scrap-fs-nano);
+    color: var(--scrap-ink-muted);
 }
 
 /* dans une note, la touche doit rester dans le fil du texte */
 .note kbd {
     padding: 0 4px;
-    font-size: 9.5px;
+    box-shadow: 1px 1px 0 var(--scrap-border);
+    font-size: var(--scrap-fs-nano);
     white-space: nowrap;
 }
 
 kbd {
     display: inline-block;
-    padding: 2px 6px;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    background: var(--card);
-    font-family: inherit;
-    font-size: 9px;
-    font-weight: 700;
-    color: var(--text-dim);
+    padding: 1px 5px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-bg-alt);
+    box-shadow: 2px 2px 0 var(--scrap-border);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    font-size: var(--scrap-fs-nano);
+    color: var(--scrap-ink-strong);
 }
 
 .diff-screen {
     flex: none;
-    height: 52px;
+    height: 54px;
     position: relative;
-    border: 1px solid var(--line-soft);
-    border-radius: var(--r-card);
-    background: #0A0908;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-screen);
     overflow: hidden;
 }
 
@@ -890,6 +1063,6 @@ kbd {
 
 @media (max-width: 900px) {
     .studio { grid-template-columns: 1fr; height: auto; }
-    .rig { height: auto; }
+    .rig { height: auto; border-right: 0; border-bottom: var(--scrap-border-w) solid var(--scrap-border); }
     .stage { min-height: 70vh; }
 }

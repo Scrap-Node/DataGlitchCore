@@ -226,7 +226,7 @@ window.dataGlitch = {
             const { ctx, w, h } = p;
             const { min, max } = this._overview;
             const n = min.length, mid = h / 2;
-            ctx.fillStyle = 'rgba(124,118,110,0.85)';
+            ctx.fillStyle = scrapTheme.rgba('--scrap-trace', 0.85);
             ctx.beginPath();
             ctx.moveTo(0, mid);
             for (let i = 0; i < n; i++) ctx.lineTo((i / n) * w, mid - max[i] * mid);
@@ -255,15 +255,21 @@ window.dataGlitch = {
         const { ctx, w, h } = p;
         const n = diff.length;
         const bw = Math.max(1, w / n + 0.6);
+        // Cuivre sourd quand c'est léger, cuivre franc quand c'est massif. Les
+        // deux bornes sont des tokens et non une rampe codée en dur : le sens
+        // de la rampe s'inverse selon le thème (sur papier, "plus de dégâts"
+        // veut dire plus SOMBRE ; sur la plaque noire, plus CLAIR). Hissées
+        // hors de la boucle : un getComputedStyle par colonne serait ruineux.
+        const lo = scrapTheme.rgb('--scrap-diff-lo');
+        const hi = scrapTheme.rgb('--scrap-diff-hi');
         for (let i = 0; i < n; i++) {
             const d = Math.min(1, Math.max(0, diff[i]));
             if (d <= 0) continue;
             const x = (i / n) * w;
             const bh = Math.max(2, d * h);
-            // brun sourd quand c'est léger, ambre franc quand c'est massif
-            const r = Math.floor(150 + 100 * d);
-            const g = Math.floor(80 + 87 * d);
-            const b = Math.floor(30 + 9 * d);
+            const r = Math.round(lo[0] + (hi[0] - lo[0]) * d);
+            const g = Math.round(lo[1] + (hi[1] - lo[1]) * d);
+            const b = Math.round(lo[2] + (hi[2] - lo[2]) * d);
             ctx.fillStyle = `rgba(${r},${g},${b},${0.42 + 0.58 * d})`;
             ctx.fillRect(x, h - bh, bw, bh);
         }
@@ -359,3 +365,12 @@ window.dataGlitch = {
         URL.revokeObjectURL(url);
     }
 };
+
+// Le CSS bascule en silence (basculement système, ou bouton .theme-toggle) :
+// sans cet abonnement, les canvas garderaient l'ancienne palette jusqu'au
+// prochain redimensionnement. Même garde qu'au redimensionnement (l.143).
+scrapTheme.onChange(() => {
+    if (window.dataGlitch._last && typeof window.dataGlitch.render === 'function') {
+        window.dataGlitch.render(window.dataGlitch._last);
+    }
+});

@@ -1,56 +1,303 @@
 /* ------------------------------------------------------------------
-   DataGlitchCore — direction artistique « appareil de labo »
-   Palette relevée au pixel sur le kit de sliders de référence :
-   fond #191816, carte #262626, accent #FAA727, piste #535353, liseré #3F3F3F
-   Partagée par DataBender et DataMosher : ne rien mettre ici qui nomme
-   l'un des deux softs en particulier.
+   DataGlitchCore — direction artistique SCRAP UI
+   Port en CSS pur de la charte commune ~/Documents/scrap-ui (dérivée
+   de la charte graphique Scrap Node). La palette et les typos sont
+   FIXES sur tous les projets ; seul le logo (slot .brand .mark) change
+   d'un projet à l'autre. Partagée par DataBender et DataMosher : ne
+   rien mettre ici qui nomme l'un des deux softs en particulier.
+
+   Thèmes : clair et sombre, auto via l'OS ou forcés par l'attribut
+   data-scrap-theme sur <html> (cf. js/theme.js). Sans préprocesseur,
+   les deux jeux de tokens s'écrivent chacun deux fois (:root / valeur
+   par défaut + sélecteur explicite) — coût honnête de la sortie du
+   SCSS, ne pas tenter de le factoriser avec @layer ou :where().
    ------------------------------------------------------------------ */
 
-@font-face {
-    font-family: 'Montserrat';
-    /* Chemin relatif volontaire (pas de "/" en tête) : il se résout par
-       rapport à l'URL réelle de ce fichier CSS, qui change de préfixe selon
-       l'hôte (app web vs app desktop, cf. Assets[] dans App.razor). Un
-       chemin absolu codé en dur cassait le fallback système de la police. */
-    src: url('fonts/montserrat-latin.woff2') format('woff2');
-    font-weight: 400 800;
-    font-style: normal;
-    font-display: swap;
-}
-
 :root {
-    /* fonds : noirs légèrement chauds, jamais bleutés */
-    --ink: #0E0D0C;
-    --ink-2: #131211;
-    --panel: #1B1A18;
-    --card: #262626;
-    --card-hi: #2E2D2C;
+    /* --- palette brute : jamais utilisée directement dans chrome.css --- */
+    --scrap-black:  #000000;
+    --scrap-bark:   #322216;
+    --scrap-copper: #956140;
+    --scrap-steel:  #718993;
+    --scrap-white:  #ffffff;
 
-    --line: #3F3F3F;
-    --line-soft: #2A2928;
-    /* le kit donne #535353, mais posé sur la carte il tombe à 2:1 :
-       remonté au minimum qui passe les 3:1 exigés pour un élément d'interface */
-    --track: #757575;
+    /* --- typographie (charte : Helvetica 900 titres, Arial corps) --- */
+    --scrap-font-display: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    --scrap-font-body: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+    /* Helvetica/Arial n'ont pas de chiffres à chasse fixe fiables : les
+       compteurs qui défilent (position de lecture, tally, valeurs de
+       curseur) sautaient d'un pixel à chaque incrément. */
+    --scrap-font-num: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-    --amber: #FAA727;
-    --amber-hot: #FFC35C;
-    --amber-deep: #C97F12;
-    --amber-ghost: rgba(250, 167, 39, 0.14);
+    --scrap-fs-hero: clamp(2.5rem, 6vw, 4.5rem);
+    --scrap-fs-h1: clamp(2rem, 4vw, 3rem);
+    --scrap-fs-h2: clamp(1.5rem, 3vw, 2rem);
+    --scrap-fs-h3: 1.25rem;
+    --scrap-fs-body: 1rem;
+    --scrap-fs-small: 0.875rem;
+    /* Échelons SOUS la charte (qui s'arrête à 14px) : cette UI est un
+       panneau d'instruments, pas une page. L'essentiel des libellés vit
+       entre 9 et 12px. Trois échelons nommés valent mieux que 40 littéraux. */
+    --scrap-fs-nano: 9px;    /* tags, bornes de curseur, axes, raccourcis */
+    --scrap-fs-micro: 10px;  /* noms de contrôle, titres de module, boutons */
+    --scrap-fs-mini: 11.5px; /* cases à cocher, notes, alertes, relevés */
 
-    --text: #EDE8E0;
-    --text-dim: #A8A199;
-    /* remonté de #6B665F : en 9px capitales très espacées, le contraste
-       tombait sous 4:1 sur le noir et les libellés devenaient illisibles */
-    --text-faint: #837D75;
-    --bone: #FFF6E8;
+    /* --- espacements --- */
+    --scrap-space-1: 0.25rem;
+    --scrap-space-2: 0.5rem;
+    --scrap-space-3: 1rem;
+    --scrap-space-4: 1.5rem;
+    --scrap-space-5: 2.5rem;
+    --scrap-space-6: 4rem;
 
-    --r-card: 3px;
-    --r-pill: 999px;
+    /* --- divers --- */
+    --scrap-radius: 2px;      /* esprit brut : angles quasi vifs */
+    --scrap-border-w: 2px;
+    --scrap-transition: 150ms cubic-bezier(0.2, 0.8, 0.3, 1);
 
-    /* Montserrat n'a pas de chasse fixe : les nombres qui défilent sautent
-       sans font-variant-numeric */
-    --num: 'Montserrat', system-ui, sans-serif;
+    /* Grain factorisé : .brand, .mod, .stage, .blank, .screen le réutilisent. */
+    --scrap-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+
+    /* Ombres dures dérivées : 4px est juste pour une carte de page, trop
+       pour une pile de modules à gouttière de 10px (cf. chrome.css, rail). */
+    --scrap-shadow-sm: 2px 2px 0 var(--scrap-border);
+    --scrap-shadow-press: 0 0 0 var(--scrap-border);
+
+    /* ============================================================
+       Tokens de thème — CLAIR par défaut (repris explicitement plus
+       bas dans :root[data-scrap-theme='light'] pour le forçage).
+       ============================================================ */
+    --scrap-bg: #ffffff;
+    --scrap-bg-alt: #f4efe9;
+    --scrap-surface: #ffffff;
+    --scrap-surface-0: rgba(255, 255, 255, 0);
+    --scrap-ink: #322216;
+    --scrap-ink-strong: #000000;
+    --scrap-ink-muted: #7a6a5c;
+
+    /* --scrap-accent remplit (boutons, piste de slider, coche, poignées) ;
+       --scrap-accent-text encre du texte (voir règle plus bas). */
+    --scrap-accent: #956140;
+    --scrap-accent-ink: #ffffff;
+    --scrap-accent-text: #7E5133;
+
+    --scrap-secondary: #718993;
+    --scrap-secondary-ink: #ffffff;
+
+    --scrap-border: #322216;
+    --scrap-border-soft: #d8cec4;
+    --scrap-shadow: 4px 4px 0 #322216;
+    --scrap-shadow-hover: 6px 6px 0 #322216;
+    --scrap-texture-opacity: 0.05;
+
+    --scrap-danger: #8a3324;
+    --scrap-danger-ink: #ffffff;
+    --scrap-danger-text: #9E3A26;
+    --scrap-success: #5f7a3f;
+    --scrap-success-ink: #ffffff;
+    --scrap-warning: #b3822f;
+    --scrap-warning-ink: #000000;
+    --scrap-warning-text: #8A6220;
+    --scrap-info: #718993;
+    --scrap-info-ink: #ffffff;
+
+    /* Plaque des canvas : en clair c'est du PAPIER, pas du blanc — le
+       cuivre sur blanc pur éblouit, et la plaque doit se détacher de
+       --scrap-surface. */
+    --scrap-screen: #EFE7DC;
+    --scrap-screen-ink: #322216;
+    --scrap-screen-line: #C9BCAE;    /* ligne de zéro, volontairement < 3:1 : repère fantôme */
+    --scrap-trace: #6B5A4C;          /* signal intact */
+    --scrap-trace-hot: #956140;      /* signal détruit */
+
+    /* Rampe des barres de diff. DEUX tokens (pas une rampe unique) car le
+       sens s'inverse selon le thème : sur papier, "plus de dégâts" = plus
+       SOMBRE ; sur la plaque noire, plus CLAIR. */
+    --scrap-diff-lo: #C9A98F;
+    --scrap-diff-hi: #7E5133;
+
+    /* Rampe 3 arrêts du spectrogramme (DataBender) — même inversion. */
+    --scrap-spectro-0: #EFE7DC;
+    --scrap-spectro-1: #956140;
+    --scrap-spectro-2: #1A0F06;
+
+    --scrap-mark-dup: #51692F;   /* frame dupliquée (timeline DataMosher) */
+    --scrap-mark-bent: #5A7280;  /* frame "bent" : acier assombri, #718993 sur papier tombe à 3.01:1 */
+
+    --scrap-shade: rgba(239, 231, 220, 0.78);      /* voile hors-zone */
+    --scrap-scroll-cue: rgba(50, 34, 22, 0.22);    /* radiales de .mod-body */
+    --scrap-scrollbar: #d8cec4;
+    --scrap-scrollbar-hi: #b9ab9d;
 }
+
+/* ============================================================
+   Forçage explicite CLAIR (data-scrap-theme="light")
+   ============================================================ */
+:root[data-scrap-theme='light'] {
+    --scrap-bg: #ffffff;
+    --scrap-bg-alt: #f4efe9;
+    --scrap-surface: #ffffff;
+    --scrap-surface-0: rgba(255, 255, 255, 0);
+    --scrap-ink: #322216;
+    --scrap-ink-strong: #000000;
+    --scrap-ink-muted: #7a6a5c;
+    --scrap-accent: #956140;
+    --scrap-accent-ink: #ffffff;
+    --scrap-accent-text: #7E5133;
+    --scrap-secondary: #718993;
+    --scrap-secondary-ink: #ffffff;
+    --scrap-border: #322216;
+    --scrap-border-soft: #d8cec4;
+    --scrap-shadow: 4px 4px 0 #322216;
+    --scrap-shadow-hover: 6px 6px 0 #322216;
+    --scrap-texture-opacity: 0.05;
+    --scrap-danger: #8a3324;
+    --scrap-danger-ink: #ffffff;
+    --scrap-danger-text: #9E3A26;
+    --scrap-success: #5f7a3f;
+    --scrap-success-ink: #ffffff;
+    --scrap-warning: #b3822f;
+    --scrap-warning-ink: #000000;
+    --scrap-warning-text: #8A6220;
+    --scrap-info: #718993;
+    --scrap-info-ink: #ffffff;
+    --scrap-screen: #EFE7DC;
+    --scrap-screen-ink: #322216;
+    --scrap-screen-line: #C9BCAE;
+    --scrap-trace: #6B5A4C;
+    --scrap-trace-hot: #956140;
+    --scrap-diff-lo: #C9A98F;
+    --scrap-diff-hi: #7E5133;
+    --scrap-spectro-0: #EFE7DC;
+    --scrap-spectro-1: #956140;
+    --scrap-spectro-2: #1A0F06;
+    --scrap-mark-dup: #51692F;
+    --scrap-mark-bent: #5A7280;
+    --scrap-shade: rgba(239, 231, 220, 0.78);
+    --scrap-scroll-cue: rgba(50, 34, 22, 0.22);
+    --scrap-scrollbar: #d8cec4;
+    --scrap-scrollbar-hi: #b9ab9d;
+}
+
+/* ============================================================
+   SOMBRE — auto via l'OS, tant que rien n'est forcé en clair.
+   ============================================================ */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-scrap-theme='light']) {
+        --scrap-bg: #1a120b;
+        --scrap-bg-alt: #322216;
+        --scrap-surface: #241910;
+        --scrap-surface-0: rgba(36, 25, 16, 0);
+        --scrap-ink: #efe6dc;
+        --scrap-ink-strong: #ffffff;
+        --scrap-ink-muted: #a8968a;
+        --scrap-accent: #956140;
+        --scrap-accent-ink: #ffffff;
+        --scrap-accent-text: #C98D5E;
+        --scrap-secondary: #718993;
+        --scrap-secondary-ink: #000000;
+        --scrap-border: #efe6dc;
+        --scrap-border-soft: #4a3826;
+        --scrap-shadow: 4px 4px 0 #000000;
+        --scrap-shadow-hover: 6px 6px 0 #000000;
+        --scrap-texture-opacity: 0.09;
+        --scrap-danger: #b0492f;
+        --scrap-danger-ink: #ffffff;
+        --scrap-danger-text: #D4735A;
+        --scrap-success: #7d9c5a;
+        --scrap-success-ink: #ffffff;
+        --scrap-warning: #cf9c45;
+        --scrap-warning-ink: #000000;
+        --scrap-warning-text: #cf9c45;
+        --scrap-info: #718993;
+        --scrap-info-ink: #ffffff;
+        --scrap-screen: #120C07;
+        --scrap-screen-ink: #EFE6DC;
+        --scrap-screen-line: #3A2E24;
+        --scrap-trace: #948578;
+        --scrap-trace-hot: #C98D5E;
+        --scrap-diff-lo: #6E4A31;
+        --scrap-diff-hi: #C98D5E;
+        --scrap-spectro-0: #120C07;
+        --scrap-spectro-1: #956140;
+        --scrap-spectro-2: #FFF3E4;
+        --scrap-mark-dup: #7d9c5a;
+        --scrap-mark-bent: #718993;
+        --scrap-shade: rgba(10, 7, 4, 0.72);
+        --scrap-scroll-cue: rgba(0, 0, 0, 0.55);
+        --scrap-scrollbar: #4a3826;
+        --scrap-scrollbar-hi: #6b5340;
+    }
+}
+
+/* ============================================================
+   Forçage explicite SOMBRE (data-scrap-theme="dark")
+   ============================================================ */
+:root[data-scrap-theme='dark'] {
+    --scrap-bg: #1a120b;
+    --scrap-bg-alt: #322216;
+    --scrap-surface: #241910;
+    --scrap-surface-0: rgba(36, 25, 16, 0);
+    --scrap-ink: #efe6dc;
+    --scrap-ink-strong: #ffffff;
+    --scrap-ink-muted: #a8968a;
+    --scrap-accent: #956140;
+    --scrap-accent-ink: #ffffff;
+    --scrap-accent-text: #C98D5E;
+    --scrap-secondary: #718993;
+    --scrap-secondary-ink: #000000;
+    --scrap-border: #efe6dc;
+    --scrap-border-soft: #4a3826;
+    --scrap-shadow: 4px 4px 0 #000000;
+    --scrap-shadow-hover: 6px 6px 0 #000000;
+    --scrap-texture-opacity: 0.09;
+    --scrap-danger: #b0492f;
+    --scrap-danger-ink: #ffffff;
+    --scrap-danger-text: #D4735A;
+    --scrap-success: #7d9c5a;
+    --scrap-success-ink: #ffffff;
+    --scrap-warning: #cf9c45;
+    --scrap-warning-ink: #000000;
+    --scrap-warning-text: #cf9c45;
+    --scrap-info: #718993;
+    --scrap-info-ink: #ffffff;
+    --scrap-screen: #120C07;
+    --scrap-screen-ink: #EFE6DC;
+    --scrap-screen-line: #3A2E24;
+    --scrap-trace: #948578;
+    --scrap-trace-hot: #C98D5E;
+    --scrap-diff-lo: #6E4A31;
+    --scrap-diff-hi: #C98D5E;
+    --scrap-spectro-0: #120C07;
+    --scrap-spectro-1: #956140;
+    --scrap-spectro-2: #FFF3E4;
+    --scrap-mark-dup: #7d9c5a;
+    --scrap-mark-bent: #718993;
+    --scrap-shade: rgba(10, 7, 4, 0.72);
+    --scrap-scroll-cue: rgba(0, 0, 0, 0.55);
+    --scrap-scrollbar: #4a3826;
+    --scrap-scrollbar-hi: #6b5340;
+}
+
+/* Règle dure, à respecter dans TOUT le codebase (CSS et JS) : chaque
+   token des familles screen / trace / diff / spectro / mark / shade, plus
+   le quatuor sémantique (danger/success/warning/info) et accent-text, DOIT
+   rester un #rrggbb ou rgba() littéral. getComputedStyle().getPropertyValue()
+   rend une custom property telle quelle : un color-mix(...) revient en
+   texte brut et ctx.fillStyle le refuse EN SILENCE, gardant la couleur
+   précédente sur le canvas. Panne invisible en relecture de code,
+   catastrophique à l'écran. color-mix() reste permis ailleurs, uniquement
+   dans des déclarations que le JS ne lit jamais et dont la perte (sur un
+   WebKit ancien) dégrade proprement. */
+
+/* ------------------------------------------------------------------
+   Règle d'usage accent : --scrap-accent REMPLIT (fonds de bouton, piste
+   de slider, coche cochée, poignées) ; --scrap-accent-text ENCRE du texte
+   (valeurs de contrôle, titres de module ouverts, tags de voie active,
+   survols). #956140 tombe à 2.95:1 sur --scrap-bg-alt sombre — trop
+   faible pour les libellés 9-13px qui peuplent cette UI ; -text corrige
+   à 5.4:1+ en gardant la même teinte cuivre (23°).
+   ------------------------------------------------------------------ */
 
 * { box-sizing: border-box; }
 
@@ -58,26 +305,40 @@ html, body {
     margin: 0;
     padding: 0;
     height: 100%;
-    background: var(--ink);
-    color: var(--text);
-    font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
-    font-weight: 500;
+    background: var(--scrap-bg);
+    color: var(--scrap-ink);
+    font-family: var(--scrap-font-body);
+    font-size: var(--scrap-fs-body);
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
-    font-variant-numeric: tabular-nums;
 }
 
-::selection { background: var(--amber); color: #17150F; }
+h1, h2, h3, .scrap-display {
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    color: var(--scrap-ink-strong);
+    margin: 0 0 var(--scrap-space-3);
+}
 
-/* barres de défilement dans le ton, sans casser le contraste */
-* { scrollbar-width: thin; scrollbar-color: #3A3937 transparent; }
+h1 { font-size: var(--scrap-fs-h1); }
+h2 { font-size: var(--scrap-fs-h2); }
+h3 { font-size: var(--scrap-fs-h3); letter-spacing: 0.02em; }
+
+::selection { background: var(--scrap-copper); color: var(--scrap-white); }
+
+/* angles vifs : le pouce de la barre n'est plus une pilule */
+* { scrollbar-width: thin; scrollbar-color: var(--scrap-scrollbar) transparent; }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: #3A3937; border-radius: var(--r-pill); }
-*::-webkit-scrollbar-thumb:hover { background: #4E4C49; }
+*::-webkit-scrollbar-thumb { background: var(--scrap-scrollbar); border-radius: 0; }
+*::-webkit-scrollbar-thumb:hover { background: var(--scrap-scrollbar-hi); }
 
 :focus-visible {
-    outline: 2px solid var(--amber);
-    outline-offset: 2px;
+    outline: 3px dashed var(--scrap-secondary);
+    outline-offset: 3px;
 }
 
 #blazor-error-ui {
@@ -88,13 +349,16 @@ html, body {
     z-index: 1000;
     display: none;
     padding: 12px 20px;
-    background: var(--amber);
-    color: #17150F;
+    background: var(--scrap-danger);
+    color: var(--scrap-danger-ink);
+    border-top: var(--scrap-border-w) solid var(--scrap-border);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
     font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.6);
+    /* flou zéro : c'est tout l'idiome des ombres SCRAP */
+    box-shadow: 0 -4px 0 var(--scrap-border);
 }
 
 #blazor-error-ui .dismiss {
@@ -103,4 +367,181 @@ html, body {
     font-size: 15px;
 }
 
-#blazor-error-ui a { color: #17150F; }
+#blazor-error-ui a { color: var(--scrap-danger-ink); }
+
+/* ==================================================================
+   SCRAP UI — base (port CSS de ~/Documents/scrap-ui, projects/scrap-ui/
+   src/styles/_base.scss). Recopié, pas consommé : le paquet npm est une
+   lib Angular. Seul le sous-ensemble réellement utilisé par ce studio
+   d'instruments est porté (pas les curseurs, .scrap-table, .scrap-radio,
+   .scrap-choice, .scrap-hero-title, .scrap-reveal — aucun consommateur
+   ici). Si un bundle CSS autonome sort un jour de scrap-ui, TOUT ce bloc
+   part d'un coup et se remplace par un <link> — d'où sa délimitation
+   explicite par ce bandeau.
+   ================================================================== */
+
+/* Grain : bruit SVG en overlay sur tout conteneur position: relative. */
+.scrap-grain { position: relative; }
+.scrap-grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--scrap-texture-opacity);
+    background-image: var(--scrap-grain);
+}
+
+/* Bord déchiré (bas) : à poser sur une section pleine largeur. */
+.scrap-torn-bottom {
+    clip-path: polygon(
+        0 0, 100% 0, 100% calc(100% - 14px), 96% 100%, 91% calc(100% - 10px),
+        85% calc(100% - 2px), 78% calc(100% - 12px), 70% calc(100% - 5px),
+        62% calc(100% - 14px), 53% calc(100% - 4px), 45% calc(100% - 11px),
+        37% calc(100% - 2px), 29% calc(100% - 13px), 21% calc(100% - 6px),
+        13% calc(100% - 12px), 6% calc(100% - 3px), 0 calc(100% - 10px)
+    );
+}
+
+/* Tampon : encadré désaxé pour labels/badges. */
+.scrap-stamp {
+    display: inline-block;
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: var(--scrap-fs-small);
+    padding: 0.2em 0.7em;
+    border: var(--scrap-border-w) solid currentColor;
+    transform: rotate(-2deg);
+    color: var(--scrap-accent);
+}
+
+/* Trait de séparation irrégulier (pinceau). */
+.scrap-rule {
+    border: 0;
+    height: 6px;
+    margin: var(--scrap-space-4) 0;
+    background: currentColor;
+    color: var(--scrap-border-soft);
+    clip-path: polygon(
+        0 40%, 8% 10%, 20% 55%, 33% 20%, 47% 70%, 60% 15%,
+        72% 60%, 85% 25%, 100% 50%, 100% 80%, 84% 55%, 70% 95%,
+        55% 45%, 41% 100%, 28% 60%, 14% 90%, 0 70%
+    );
+}
+
+/* --- bouton : ombre dure, décollage au survol, écrasement à l'appui --- */
+.scrap-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--scrap-space-2);
+    font-family: var(--scrap-font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: var(--scrap-fs-small);
+    padding: 0.8em 1.6em;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    cursor: pointer;
+    text-decoration: none;
+    box-shadow: var(--scrap-shadow);
+    transition: transform var(--scrap-transition), box-shadow var(--scrap-transition);
+}
+.scrap-btn:hover { transform: translate(-2px, -2px); box-shadow: var(--scrap-shadow-hover); }
+.scrap-btn:active { transform: translate(3px, 3px); box-shadow: var(--scrap-shadow-press); }
+.scrap-btn:focus-visible { outline: 3px dashed var(--scrap-secondary); outline-offset: 3px; }
+.scrap-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: var(--scrap-shadow);
+}
+.scrap-btn--primary { background: var(--scrap-accent); color: var(--scrap-accent-ink); }
+.scrap-btn--secondary { background: var(--scrap-secondary); color: var(--scrap-secondary-ink); }
+.scrap-btn--ghost { background: transparent; color: var(--scrap-ink-strong); }
+
+/* --- case à cocher : coche irrégulière type marqueur --- */
+.scrap-checkbox {
+    appearance: none;
+    width: 1.35em;
+    height: 1.35em;
+    margin: 0;
+    flex: none;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    background: var(--scrap-bg-alt);
+    cursor: pointer;
+    display: inline-grid;
+    place-content: center;
+    vertical-align: middle;
+    transform: rotate(-2deg);
+    transition: box-shadow var(--scrap-transition);
+}
+.scrap-checkbox:focus-visible { outline: none; box-shadow: var(--scrap-shadow); }
+.scrap-checkbox::before {
+    content: '';
+    width: 1em;
+    height: 1em;
+    transform: scale(0) rotate(8deg);
+    transition: transform 120ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+    background: var(--scrap-accent);
+    clip-path: polygon(14% 52%, 30% 40%, 44% 62%, 82% 8%, 98% 20%, 46% 96%, 4% 66%);
+}
+.scrap-checkbox:checked::before { transform: scale(1.15) rotate(8deg); }
+
+/* --- select : chevron anguleux cuivre maison --- */
+.scrap-select {
+    appearance: none;
+    font-family: var(--scrap-font-body);
+    font-size: var(--scrap-fs-body);
+    color: var(--scrap-ink);
+    background: var(--scrap-bg-alt);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    padding: 0.65em 2.4em 0.65em 0.9em;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='10'%3E%3Cpath d='M1 1h12L7 9 1 1Z' fill='%23956140'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.8em center;
+}
+.scrap-select:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
+
+/* --- champ texte / nombre --- */
+.scrap-input {
+    font-family: var(--scrap-font-body);
+    font-size: var(--scrap-fs-body);
+    color: var(--scrap-ink);
+    background: var(--scrap-bg-alt);
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: var(--scrap-radius);
+    padding: 0.65em 0.9em;
+    transition: box-shadow var(--scrap-transition);
+}
+.scrap-input:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
+.scrap-input::placeholder { color: var(--scrap-ink-muted); }
+
+/* ============================================================
+   Animations signature
+   ============================================================ */
+
+/* Apparition "coup de tampon" : arrive de face et claque sur la page. */
+@keyframes scrap-stamp-in {
+    0%   { opacity: 0; transform: scale(1.7) rotate(4deg); }
+    55%  { opacity: 1; transform: scale(0.94) rotate(-2deg); }
+    75%  { transform: scale(1.03) rotate(-1deg); }
+    100% { opacity: 1; transform: scale(1) rotate(-1deg); }
+}
+
+/* Tremblement léger au survol (élément décoratif). */
+@keyframes scrap-jitter {
+    0%, 100% { transform: translate(0, 0) rotate(0); }
+    25% { transform: translate(-1px, 1px) rotate(-0.4deg); }
+    50% { transform: translate(1px, -1px) rotate(0.4deg); }
+    75% { transform: translate(-1px, -1px) rotate(-0.2deg); }
+}
+.scrap-jitter:hover { animation: scrap-jitter 180ms linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+    .scrap-jitter:hover { animation: none; }
+}
