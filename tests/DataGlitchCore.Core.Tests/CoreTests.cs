@@ -25,6 +25,53 @@ public class CoreTests
         Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.Current.ToArray());
     }
 
+    [Fact]
+    public void FileBuffer_Clamps_An_Oversized_Cap_Instead_Of_Falling_Back()
+    {
+        // Un cap au-delà du représentable doit être ramené au plafond, PAS
+        // faire retomber sur le défaut : l'ancienne version renvoyait
+        // silencieusement à 200 Mo, ce qui aurait tronqué un fichier de 2 Go
+        // sans le moindre signe dès qu'un réglage laisse monter le cap.
+        var data = new byte[1000];
+        var buf = FileBuffer.Load("x.bin", new MemoryStream(data), maxBytes: long.MaxValue);
+        Assert.False(buf.Truncated);
+        Assert.Equal(1000, buf.Length);
+    }
+
+    [Fact]
+    public void FileBuffer_Sizes_Exactly_When_The_Length_Is_Known()
+    {
+        // Flux non seekable (cas d'un upload navigateur) : sans expectedLength
+        // il faut passer par le chemin à tampon croissant, avec il alloue juste.
+        // Les deux doivent produire le même contenu — c'est tout ce que
+        // l'appelant a le droit d'observer.
+        var data = Enumerable.Range(0, 500).Select(i => (byte)i).ToArray();
+
+        var blind = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096);
+        var sized = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096, expectedLength: data.Length);
+
+        Assert.Equal(data, blind.Current.ToArray());
+        Assert.Equal(data, sized.Current.ToArray());
+        Assert.False(sized.Truncated);
+    }
+
+    [Fact]
+    public void FileBuffer_Truncates_On_The_Sized_Path_Too()
+    {
+        var data = new byte[1000];
+        var buf = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 256, expectedLength: data.Length);
+        Assert.True(buf.Truncated);
+        Assert.Equal(256, buf.Length);
+    }
+
+    /// <summary>Flux qui refuse de dire sa taille — ce que fait le flux d'un
+    /// InputFile Blazor, et donc le cas qui décide du chemin de lecture.</summary>
+    private sealed class NonSeekableStream(byte[] data) : MemoryStream(data)
+    {
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+    }
+
     // ---- Journal ----
 
     [Fact]

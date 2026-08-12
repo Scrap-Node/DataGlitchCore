@@ -149,4 +149,71 @@ public class RiffTests
         var chunks = Riff.Walk(ReadOnlySpan<byte>.Empty, 0, 0);
         Assert.Empty(chunks);
     }
+
+    // ---- mode tolérant : le fichier coupé au cap RAM ----
+
+    [Fact]
+    public void Walk_Tolerant_Clamps_A_Chunk_That_Runs_Past_The_Region()
+    {
+        // Le chunk annonce 100 octets, il n'en reste que 4 : c'est exactement
+        // ce que produit FileBuffer quand il tronque au cap.
+        var bytes = Concat(
+            Encoding.ASCII.GetBytes("data"),
+            BitConverter.GetBytes(100u),
+            new byte[] { 1, 2, 3, 4 });
+
+        Assert.Throws<RiffFormatException>(() => Riff.Walk(bytes, 0, bytes.Length));
+
+        var chunks = Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true);
+
+        var chunk = Assert.Single(chunks);
+        Assert.Equal("data", chunk.Id);
+        Assert.Equal(4, chunk.DataSize); // ramené au réellement présent
+    }
+
+    [Fact]
+    public void Walk_Tolerant_Descends_Into_A_Truncated_Riff_Root()
+    {
+        // Le vrai scénario du WAV coupé au cap : la racine RIFF annonce la
+        // taille du fichier entier, le chunk "data" annonce toute la charge
+        // utile, et le buffer s'arrête au milieu. Les deux doivent être
+        // rabotés, et "fmt " — complet, avant la coupure — rester lisible :
+        // sans ça, MediaProbe n'aurait aucun moyen de décrire le fichier.
+        var fmt = Chunk("fmt ", new byte[] { 1, 2, 3, 4 });
+        var dataHeader = Concat(Encoding.ASCII.GetBytes("data"), BitConverter.GetBytes(4096u));
+        var content = Concat(Encoding.ASCII.GetBytes("WAVE"), fmt, dataHeader, new byte[] { 7, 7, 7, 7, 7, 7 });
+        var whole = Concat(Encoding.ASCII.GetBytes("RIFF"), BitConverter.GetBytes(999999u), content);
+
+        var chunks = Riff.Walk(whole, 0, whole.Length, tolerateTruncation: true);
+
+        Assert.Equal(3, chunks.Count);
+        Assert.Equal(("RIFF", "WAVE"), (chunks[0].Id, chunks[0].ListType));
+        Assert.Equal("fmt ", chunks[1].Id);
+        Assert.Equal(4, chunks[1].DataSize);
+        Assert.Equal("data", chunks[2].Id);
+        Assert.Equal(6, chunks[2].DataSize); // 4096 annoncés, 6 réellement là
+    }
+
+    [Fact]
+    public void Walk_Tolerant_Still_Rejects_A_Size_Beyond_32_Bits()
+    {
+        // La tolérance vise la coupure, pas la corruption : une taille qu'un
+        // offset 32 bits ne peut pas porter reste un refus, sinon on
+        // masquerait un OpenDML au lieu de le signaler.
+        var bytes = Concat(Encoding.ASCII.GetBytes("data"), BitConverter.GetBytes(3_000_000_000u), new byte[] { 1, 2 });
+
+        Assert.Throws<RiffFormatException>(() => Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true));
+    }
+
+    [Fact]
+    public void Walk_Tolerant_Drops_A_List_Cut_Before_Its_Subtype()
+    {
+        // Coupé si tôt qu'il ne reste même pas les 4 octets de sous-type :
+        // il n'y a rien de nommable, on n'invente pas un chunk.
+        var bytes = Concat(Encoding.ASCII.GetBytes("LIST"), BitConverter.GetBytes(64u), new byte[] { 1, 2 });
+
+        var chunks = Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true);
+
+        Assert.Empty(chunks);
+    }
 }
