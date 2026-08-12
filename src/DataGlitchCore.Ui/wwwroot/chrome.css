@@ -125,6 +125,11 @@
 
 .brand .theme-toggle:hover { transform: rotate(-2deg) scale(1.05); }
 
+/* LE défilement de la colonne — le seul. Chaque module s'ouvre à sa hauteur
+   naturelle (cf. .mod / .mod-body) et c'est cette piste qui les fait défiler,
+   à la Pixelmator : on parcourt les sections, on ne défile jamais À
+   L'INTÉRIEUR de l'une d'elles. Un réglage ne se cache donc jamais derrière
+   un second niveau de scroll qu'il faut deviner. */
 .modules {
     flex: 1 1 auto;
     /* sans ça, un conteneur flex refuse de descendre sous la taille de son
@@ -140,9 +145,9 @@
     gap: 12px;
 }
 
-/* Volontairement un <div> et non un <details> : ce dernier ne laisse pas son
-   contenu se contraindre à la hauteur disponible (ni en flex, ni en grid, ni
-   par max-height), et le corps débordait en silence au lieu de défiler. */
+/* Volontairement un <div> et non un <details> : ce dernier impose sa propre
+   boîte de rendu au contenu, ce qui interdisait déjà de le mettre en flex
+   colonne comme ici. */
 .mod {
     position: relative;
     background: var(--scrap-surface);
@@ -152,8 +157,11 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    flex: 0 0 auto; /* replié : juste l'entête */
+    /* Ni grandir ni RÉTRÉCIR : un module fait la taille de son contenu, qu'il
+       soit seul ouvert ou quatre. C'est ce 0 0 qui garantit qu'aucun réglage
+       ne se retrouve comprimé hors de vue quand la colonne se remplit — le
+       débordement part alors dans .modules, à qui il revient. */
+    flex: 0 0 auto;
 }
 
 .mod::before {
@@ -163,18 +171,6 @@
     pointer-events: none;
     opacity: var(--scrap-texture-opacity);
     background-image: var(--scrap-grain);
-}
-
-/* Ouvert, un module cède de la hauteur quand plusieurs le sont en même temps,
-   mais jamais au point de devenir illisible : en dessous du plancher, c'est la
-   colonne entière qui prend le relais et défile. */
-.mod.open {
-    flex: 0 1 auto;
-    /* Plancher calé pour qu'à hauteur d'écran courante les quatre modules
-       ouverts tiennent dans la colonne sans la faire défiler : on garde alors
-       un seul niveau de défilement, à l'intérieur du module concerné.
-       Remesuré après le passage aux bordures 2px + rivets du mod-head. */
-    min-height: 164px;
 }
 
 .mod-head {
@@ -247,25 +243,12 @@
 
 .mod:not(.open) .chev { transform: rotate(180deg); }
 
+/* Aucune contrainte de hauteur, donc aucun défilement interne : le corps fait
+   la taille de ce qu'il contient et le module grandit avec lui. Les ombres de
+   défilement qui vivaient ici (deux dégradés « local » masquant deux radiales
+   « scroll ») ont disparu avec la scroller qu'elles annotaient. */
 .mod-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    /* arrivé en bout de course, le scroll ne part pas emporter la colonne */
-    overscroll-behavior: contain;
     padding: 4px 14px 8px;
-
-    /* Ombres de défilement : les deux premières couches sont ancrées au contenu
-       (local) et masquent les deux radiales ancrées à la boîte (scroll). Le
-       dégradé n'apparaît donc que du côté où il reste réellement à lire.
-       --scrap-surface-0 est un jumeau alpha-0 explicite de --scrap-surface
-       (pas color-mix) : cette déclaration ne doit jamais être perdue sur un
-       WebKit ancien, la scroller en a vraiment besoin. */
-    background:
-        linear-gradient(var(--scrap-surface) 30%, var(--scrap-surface-0)) top / 100% 16px no-repeat local,
-        linear-gradient(var(--scrap-surface-0), var(--scrap-surface) 70%) bottom / 100% 16px no-repeat local,
-        radial-gradient(farthest-side at 50% 0, var(--scrap-scroll-cue), transparent) top / 100% 7px no-repeat scroll,
-        radial-gradient(farthest-side at 50% 100%, var(--scrap-scroll-cue), transparent) bottom / 100% 7px no-repeat scroll;
 }
 
 /* le coup de pinceau qui ferme chaque module, à la place des trois points */

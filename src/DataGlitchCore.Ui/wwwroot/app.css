@@ -70,7 +70,6 @@
     --scrap-bg: #ffffff;
     --scrap-bg-alt: #f4efe9;
     --scrap-surface: #ffffff;
-    --scrap-surface-0: rgba(255, 255, 255, 0);
     --scrap-ink: #322216;
     --scrap-ink-strong: #000000;
     --scrap-ink-muted: #7a6a5c;
@@ -125,7 +124,6 @@
     --scrap-mark-bent: #5A7280;  /* frame "bent" : acier assombri, #718993 sur papier tombe à 3.01:1 */
 
     --scrap-shade: rgba(239, 231, 220, 0.78);      /* voile hors-zone */
-    --scrap-scroll-cue: rgba(50, 34, 22, 0.22);    /* radiales de .mod-body */
     --scrap-scrollbar: #d8cec4;
     --scrap-scrollbar-hi: #b9ab9d;
 }
@@ -137,7 +135,6 @@
     --scrap-bg: #ffffff;
     --scrap-bg-alt: #f4efe9;
     --scrap-surface: #ffffff;
-    --scrap-surface-0: rgba(255, 255, 255, 0);
     --scrap-ink: #322216;
     --scrap-ink-strong: #000000;
     --scrap-ink-muted: #7a6a5c;
@@ -174,7 +171,6 @@
     --scrap-mark-dup: #51692F;
     --scrap-mark-bent: #5A7280;
     --scrap-shade: rgba(239, 231, 220, 0.78);
-    --scrap-scroll-cue: rgba(50, 34, 22, 0.22);
     --scrap-scrollbar: #d8cec4;
     --scrap-scrollbar-hi: #b9ab9d;
 }
@@ -187,7 +183,6 @@
         --scrap-bg: #1a120b;
         --scrap-bg-alt: #322216;
         --scrap-surface: #241910;
-        --scrap-surface-0: rgba(36, 25, 16, 0);
         --scrap-ink: #efe6dc;
         --scrap-ink-strong: #ffffff;
         --scrap-ink-muted: #a8968a;
@@ -224,7 +219,6 @@
         --scrap-mark-dup: #7d9c5a;
         --scrap-mark-bent: #718993;
         --scrap-shade: rgba(10, 7, 4, 0.72);
-        --scrap-scroll-cue: rgba(0, 0, 0, 0.55);
         --scrap-scrollbar: #4a3826;
         --scrap-scrollbar-hi: #6b5340;
     }
@@ -237,7 +231,6 @@
     --scrap-bg: #1a120b;
     --scrap-bg-alt: #322216;
     --scrap-surface: #241910;
-    --scrap-surface-0: rgba(36, 25, 16, 0);
     --scrap-ink: #efe6dc;
     --scrap-ink-strong: #ffffff;
     --scrap-ink-muted: #a8968a;
@@ -274,7 +267,6 @@
     --scrap-mark-dup: #7d9c5a;
     --scrap-mark-bent: #718993;
     --scrap-shade: rgba(10, 7, 4, 0.72);
-    --scrap-scroll-cue: rgba(0, 0, 0, 0.55);
     --scrap-scrollbar: #4a3826;
     --scrap-scrollbar-hi: #6b5340;
 }
