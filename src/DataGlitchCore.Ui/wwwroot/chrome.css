@@ -382,6 +382,134 @@
     box-shadow: 2px 2px 0 var(--scrap-border);
 }
 
+/* --- curseur double : une seule piste, deux poignées (un intervalle) ---
+
+   Deux <input type="range"> superposés plutôt qu'un contrôle maison : on garde
+   gratuitement le clavier, le focus, le pas et la sémantique native. L'input
+   ne reçoit pas la souris (pointer-events: none), SEULES ses poignées la
+   reçoivent — sans ça celui du dessus couvrirait toute la piste et l'autre
+   serait inatteignable. Contrepartie assumée : cliquer la piste ne déplace
+   rien, il faut saisir une poignée.
+
+   Poignées superposées : ce n'est jamais un piège, à condition que l'appelant
+   trie ses deux valeurs (min/max) avant de les afficher — la poignée du dessus
+   reste saisissable et le tri rétablit l'intervalle quel que soit celui des
+   deux inputs qui porte la plus grande valeur.
+
+   --lo/--hi sont des RATIOS 0..1, là où le curseur simple prend --pct en
+   pourcentage : le remplissage doit être calé sur le CENTRE des poignées, qui
+   ne parcourt pas toute la largeur mais [9px, largeur-9px] (le natif encastre
+   la poignée dans la piste). Cette arithmétique-là demande un nombre, pas un
+   pourcentage. Sans elle, le remplissage décroche de 9px aux extrémités. */
+
+.sld2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.sld2-track {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 26px;
+}
+
+.sld2-track::before,
+.sld2-track::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: var(--scrap-radius);
+    pointer-events: none;
+}
+
+/* piste creuse, sur toute la largeur */
+.sld2-track::before {
+    left: 0;
+    right: 0;
+    background: var(--scrap-border-soft);
+}
+
+/* portion retenue, bornée aux centres des deux poignées */
+.sld2-track::after {
+    left: calc(9px + var(--lo, 0) * (100% - 18px));
+    width: calc((var(--hi, 1) - var(--lo, 0)) * (100% - 18px));
+    background: var(--scrap-accent);
+}
+
+.sld2-track input[type="range"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    pointer-events: none;
+}
+
+.sld2-track input[type="range"]::-webkit-slider-runnable-track {
+    height: 5px;
+    background: transparent;
+}
+
+.sld2-track input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    pointer-events: auto;
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: 50%;
+    background: var(--scrap-accent);
+    box-shadow: 2px 2px 0 var(--scrap-border);
+    cursor: pointer;
+    transition: transform 0.12s ease;
+}
+
+.sld2-track input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+.sld2-track input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.95); }
+
+/* L'input couvrant toute la piste, le contour de focus global dessinerait un
+   grand rectangle sans rapport avec ce qui a le focus : on le reporte sur la
+   poignée, seule chose que l'utilisateur manipule. */
+.sld2-track input[type="range"]:focus-visible { outline: none; }
+
+.sld2-track input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px var(--scrap-secondary), 2px 2px 0 var(--scrap-border);
+}
+
+/* Firefox */
+.sld2-track input[type="range"]::-moz-range-track {
+    height: 5px;
+    background: transparent;
+}
+
+/* sinon Firefox peint sa propre progression par-dessus notre remplissage */
+.sld2-track input[type="range"]::-moz-range-progress {
+    background: transparent;
+}
+
+.sld2-track input[type="range"]::-moz-range-thumb {
+    pointer-events: auto;
+    width: 18px;
+    height: 18px;
+    border: var(--scrap-border-w) solid var(--scrap-border);
+    border-radius: 50%;
+    background: var(--scrap-accent);
+    box-shadow: 2px 2px 0 var(--scrap-border);
+    cursor: pointer;
+}
+
+.sld2-track input[type="range"]:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 3px var(--scrap-secondary), 2px 2px 0 var(--scrap-border);
+}
+
 /* --- select --- */
 
 .pick {

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ScrapIsland.Web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/comechaslerie/Documents/DELIVERY/ScrapIsland/src/ScrapIsland.Web", "run", "start", "--", "--port", "4200"],
+      "port": 4200
+    }
+  ]
+}
