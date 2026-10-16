@@ -65,6 +65,13 @@ window.dataGlitch = {
         window.addEventListener('pointerup', () => {
             if (!this._dragging) return;
             this._dragging = null;
+            // _applyRegion place dmHandleStart au min et dmHandleEnd au max :
+            // après un croisement, la poignée de gauche porte "end". Sans cette
+            // remise en ordre, la saisie suivante de la poignée de droite
+            // écrivait dans "start" et la borne gauche sautait d'un coup.
+            const lo = Math.min(this._region.start, this._region.end);
+            const hi = Math.max(this._region.start, this._region.end);
+            this._region = { start: lo, end: hi };
             this._dragEndedAt = performance.now();
             document.body.classList.remove('dm-dragging');
             this._notifyRegion(false);
@@ -75,28 +82,28 @@ window.dataGlitch = {
             if (e.target.closest('[data-handle]')) return;
             // un relâchement de drag génère un click juste après : on l'ignore
             if (performance.now() - this._dragEndedAt < 250) return;
-            const wrap = e.target.closest('.screen');
+            const wrap = this._axisScreen(e);
             if (!wrap) return;
-            const r = wrap.getBoundingClientRect();
-            if (r.width <= 0) return;
+            const v = this._fractionIn(e, wrap);
+            if (v === null) return;
             if (typeof this.seekFraction === 'function')
-                this.seekFraction(this._toFile((e.clientX - r.left) / r.width));
+                this.seekFraction(this._toFile(v));
         });
 
         // molette sur un écran = zoom autour du curseur ; maj/horizontal = défilement
         document.addEventListener('wheel', e => {
-            const screen = e.target.closest('.screen');
+            const screen = this._axisScreen(e);
             if (!screen || !this._dotnet) return;
             e.preventDefault();
-            const r = screen.getBoundingClientRect();
-            if (r.width <= 0) return;
+            const v = this._fractionIn(e, screen);
+            if (v === null) return;
 
             if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
                 const amount = (e.shiftKey ? e.deltaY : e.deltaX) || e.deltaY;
-                this._dotnet.invokeMethodAsync('OnPan', (amount / r.width) * this._span());
+                this._dotnet.invokeMethodAsync('OnPan', (amount / screen.clientWidth) * this._span());
                 return;
             }
-            const anchor = this._toFile((e.clientX - r.left) / r.width);
+            const anchor = this._toFile(v);
             this._queueZoom(anchor, Math.pow(1.0016, -e.deltaY));
         }, { passive: false });
 
@@ -144,6 +151,32 @@ window.dataGlitch = {
         });
     },
 
+    // ---------- géométrie pointeur ----------
+
+    /// L'écran (.screen) sous le pointeur, s'il porte un axe temporel. Un écran
+    /// qui n'en porte pas (ex. les aperçus image de DataMosher) se déclare avec
+    /// data-seek="off" : sans ça, cliquer sur une image déplaçait la tête de
+    /// lecture vers une frame sans rapport — et, dans DataMosher, basculait au
+    /// passage la suppression d'une I-frame à l'insu de l'utilisateur.
+    _axisScreen(e) {
+        const s = e.target.closest('.screen');
+        return s && s.dataset.seek !== 'off' ? s : null;
+    },
+
+    /// Position horizontale du pointeur, en fraction [0,1] de la zone DESSINÉE
+    /// d'un élément : sa padding-box, celle où s'inscrivent les canvas et les
+    /// repères en position:absolute — pas sa border-box (getBoundingClientRect),
+    /// qui compte en plus la bordure de --scrap-border-w. Cet écart de 2 px
+    /// décalait chaque clic de plusieurs frames sur une timeline dense
+    /// (DataMosher : ~4 frames à 1800 frames sur 1000 px, de quoi ne jamais
+    /// atteindre l'I-frame visée). null si l'élément n'a pas de largeur.
+    _fractionIn(e, el) {
+        const w = el.clientWidth;
+        if (w <= 0) return null;
+        const left = el.getBoundingClientRect().left + el.clientLeft;
+        return Math.min(1, Math.max(0, (e.clientX - left) / w));
+    },
+
     // ---------- fenêtre visible ----------
 
     _span() { return Math.max(1e-9, this._view.end - this._view.start); },
@@ -177,18 +210,17 @@ window.dataGlitch = {
     },
 
     _recentreFrom(e, ov) {
-        const r = ov.getBoundingClientRect();
-        if (r.width <= 0 || !this._dotnet) return;
-        const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        if (!this._dotnet) return;
+        const f = this._fractionIn(e, ov);
+        if (f === null) return;
         this._dotnet.invokeMethodAsync('OnRecentre', f);
     },
 
     _pctFromEvent(e) {
         const overlay = document.getElementById('dmOverlay');
         if (!overlay) return null;
-        const r = overlay.getBoundingClientRect();
-        if (r.width <= 0) return null;
-        const v = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        const v = this._fractionIn(e, overlay);
+        if (v === null) return null;
         return Math.min(1, Math.max(0, this._toFile(v)));
     },
 

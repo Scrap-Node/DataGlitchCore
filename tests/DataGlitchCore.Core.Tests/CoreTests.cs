@@ -257,6 +257,26 @@ public class CoreTests
         Assert.Empty(batch.Edits);
     }
 
+    [Theory]
+    [InlineData(DestructionOperator.Reverse, 1)]
+    [InlineData(DestructionOperator.DuplicateBlock, 1)]
+    [InlineData(DestructionOperator.DuplicateBlock, 4)]
+    public void Engine_Operators_Still_Destroy_At_The_Smallest_Block_Sizes(DestructionOperator op, int blockSize)
+    {
+        // Les curseurs de bloc des deux apps descendent à 1 octet : Reverse sur
+        // 1 octet, ou la répétition d'un motif de 4 octets sur un bloc de 4 ou
+        // moins, ne changeaient strictement rien — 0 édition à 100 % de
+        // densité, bouton "Détruire" sans effet. Le moteur relève donc le bloc
+        // au minimum utile de l'opérateur.
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 256).Select(i => (byte)i).ToArray());
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = blockSize, Operator = op };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, DestructionMask.WholeBuffer);
+
+        Assert.NotEmpty(batch.Edits);
+        Assert.True(DestructionEngine.MinBlockSize(op) > blockSize);
+    }
+
     [Fact]
     public void Mask_FromRegions_Normalises_Overlaps_And_Order()
     {

@@ -205,6 +205,30 @@ public class RiffTests
         Assert.Throws<RiffFormatException>(() => Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Walk_A_Size_Just_Under_Int_MaxValue_Is_A_Format_Error_Not_An_Overflow(bool tolerate)
+    {
+        // pos + 8 + size, calculé en int, débordait en négatif pour une taille
+        // dans [int.MaxValue - 7 - pos, int.MaxValue] : ni le refus strict ni
+        // le rabotage tolérant ne se déclenchaient, et le parcours repartait
+        // d'un offset négatif — ArgumentOutOfRangeException, qu'aucun
+        // appelant (MediaProbe, AviIndex) n'attrape.
+        var bytes = Concat(Encoding.ASCII.GetBytes("data"), BitConverter.GetBytes((uint)int.MaxValue), new byte[] { 1, 2 });
+
+        if (tolerate)
+        {
+            var chunks = Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true);
+            var data = Assert.Single(chunks);
+            Assert.Equal(2, data.Size);
+        }
+        else
+        {
+            Assert.Throws<RiffFormatException>(() => Riff.Walk(bytes, 0, bytes.Length));
+        }
+    }
+
     [Fact]
     public void Walk_Tolerant_Drops_A_List_Cut_Before_Its_Subtype()
     {

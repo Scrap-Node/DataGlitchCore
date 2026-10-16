@@ -99,13 +99,16 @@ public static class Riff
                 throw new RiffFormatException(
                     $"Chunk {id} à l'offset {pos} trop court ({size} octets) pour contenir un FourCC de sous-type.");
             }
-            if (pos + 8 + size > to)
+            // En long : une taille proche de int.MaxValue ferait déborder la
+            // somme en négatif et passer ce test sans rien rejeter ni raboter.
+            long end = (long)pos + 8 + size;
+            if (end > to)
             {
                 if (!tolerate)
                 {
                     throw new RiffFormatException(
                         $"Chunk '{id}' à l'offset {pos} (taille déclarée {size}) déborde de sa région " +
-                        $"(fin à {pos + 8 + size}, région jusqu'à {to}).");
+                        $"(fin à {end}, région jusqu'à {to}).");
                 }
 
                 // Fichier coupé net (typiquement au cap RAM) : on ramène le
