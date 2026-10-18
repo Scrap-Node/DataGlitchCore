@@ -134,9 +134,9 @@ window.dataGlitch = {
             if (e.code !== 'Space' && e.key !== ' ') return;
             const t = e.target;
             // ne pas voler l'espace à une saisie de texte (champ seed, etc.)
-            // ni à un entête de module, où il sert à replier/déplier
+            // ni à l'entête d'un accordéon, où il sert à replier/déplier
             if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
-                      || t.closest('.mod-head'))) return;
+                      || t.closest('summary'))) return;
             if (t && t.tagName === 'INPUT' && t.type !== 'range' && t.type !== 'checkbox') return;
             if (typeof this.toggle !== 'function') return;
             // empêche le scroll de page et l'activation du bouton qui a le focus
@@ -166,7 +166,7 @@ window.dataGlitch = {
     /// Position horizontale du pointeur, en fraction [0,1] de la zone DESSINÉE
     /// d'un élément : sa padding-box, celle où s'inscrivent les canvas et les
     /// repères en position:absolute — pas sa border-box (getBoundingClientRect),
-    /// qui compte en plus la bordure de --scrap-border-w. Cet écart de 2 px
+    /// qui compte en plus la bordure de l'écran. Cet écart de 2 px
     /// décalait chaque clic de plusieurs frames sur une timeline dense
     /// (DataMosher : ~4 frames à 1800 frames sur 1000 px, de quoi ne jamais
     /// atteindre l'I-frame visée). null si l'élément n'a pas de largeur.
@@ -258,7 +258,7 @@ window.dataGlitch = {
             const { ctx, w, h } = p;
             const { min, max } = this._overview;
             const n = min.length, mid = h / 2;
-            ctx.fillStyle = scrapTheme.rgba('--scrap-trace', 0.85);
+            ctx.fillStyle = scrapTheme.rgba('--dg-trace', 0.85);
             ctx.beginPath();
             ctx.moveTo(0, mid);
             for (let i = 0; i < n; i++) ctx.lineTo((i / n) * w, mid - max[i] * mid);
@@ -292,8 +292,8 @@ window.dataGlitch = {
         // de la rampe s'inverse selon le thème (sur papier, "plus de dégâts"
         // veut dire plus SOMBRE ; sur la plaque noire, plus CLAIR). Hissées
         // hors de la boucle : un getComputedStyle par colonne serait ruineux.
-        const lo = scrapTheme.rgb('--scrap-diff-lo');
-        const hi = scrapTheme.rgb('--scrap-diff-hi');
+        const lo = scrapTheme.rgb('--dg-diff-lo');
+        const hi = scrapTheme.rgb('--dg-diff-hi');
         for (let i = 0; i < n; i++) {
             const d = Math.min(1, Math.max(0, diff[i]));
             if (d <= 0) continue;

@@ -1,861 +1,394 @@
 /* ==================================================================
-   Coquille générique du studio : colonne de modules à gauche, écrans
-   à droite. DA SCRAP UI — grunge assumé (grain, bords déchirés, ombres
-   dures, tampons), palette noir/brun/cuivre/bleu-gris/blanc, deux
-   thèmes. Le cuivre ne sert qu'à deux choses : ce qui est actif, et ce
-   qui est détruit. Tout le reste passe par l'encre neutre du thème.
+   Coquille des outils Data : barre du haut, plateau de tracés au
+   centre, inspecteur de réglages à droite, barre d'état en bas.
 
-   Partagée par DataBender et DataMosher, via DataGlitchCore.Ui. Ce
-   qui reste volontairement en dehors (spécifique à l'audio, dans
-   Home.razor.css côté DataBender) : la troisième voie « spectro »
-   (.spectro-lane) et les repères de bande de fréquence (.band*).
+   Posée sur @scrap-node/scrap-ui (lib/scrap-ui/scrap-ui.css) : les
+   contrôles de l'inspecteur sont ceux de la lib (.scrap-slider,
+   .scrap-select, .scrap-switch, .scrap-disclosure, .scrap-dropzone,
+   .scrap-btn…). Cette feuille ne porte que la mise en page et le plateau,
+   que la lib ne connaît pas. Le cuivre ne dit que deux choses : l'action
+   principale, et ce qui est détruit.
 
-   Maths de gabarit : la colonne gauche est passée de 364px à 384px
-   pour absorber les bordures 2px et les ombres dures des boutons
-   ghost SCRAP (voir .studio, .modules, .mod, .row button ci-dessous).
-   Les marges 4-14px restent volontairement en littéraux plutôt qu'en
-   --scrap-space-* : la densité instrumentale de ce panneau est une
-   propriété voulue, pas un oubli de tokenisation — ne pas « ranger ».
+   Partagée par DataBender et DataMosher, via DataGlitchCore.Ui. Reste
+   en dehors, propre à l'audio (Home.razor.css côté DataBender) : la voie
+   du spectre (.spectro-lane) et les repères de bande (.band*).
+
+   Les noms du plateau (.screen, .viz, .region, .handle, #dmOverlay…)
+   sont un contrat avec js/dataGlitch.js et les scripts des applis : ne
+   pas les renommer sans eux.
    ================================================================== */
 
-.studio {
+/* ---------------- gabarit ---------------- */
+
+.dg-app {
     display: grid;
-    grid-template-columns: 384px 1fr;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: 52px minmax(0, 1fr) 24px;
+    grid-template-areas:
+        'head head'
+        'stage inspector'
+        'status status';
     height: 100vh;
+    height: 100dvh;
     background: var(--scrap-bg);
-}
-
-/* ---------------- colonne gauche ---------------- */
-
-.rig {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--scrap-bg-alt);
-    border-right: var(--scrap-border-w) solid var(--scrap-border);
-}
-
-.brand {
-    position: relative;
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    column-gap: 12px;
-    align-items: center;
-    /* le padding bas dégage la morsure du bord déchiré (14px max) */
-    padding: 20px 20px calc(16px + 14px);
-    background: var(--scrap-bark);
-    color: var(--scrap-white);
-    clip-path: polygon(
-        0 0, 100% 0, 100% calc(100% - 14px), 96% 100%, 91% calc(100% - 10px),
-        85% calc(100% - 2px), 78% calc(100% - 12px), 70% calc(100% - 5px),
-        62% calc(100% - 14px), 53% calc(100% - 4px), 45% calc(100% - 11px),
-        37% calc(100% - 2px), 29% calc(100% - 13px), 21% calc(100% - 6px),
-        13% calc(100% - 12px), 6% calc(100% - 3px), 0 calc(100% - 10px)
-    );
-}
-
-.brand::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: var(--scrap-texture-opacity);
-    background-image: var(--scrap-grain);
-}
-
-/* slot logo : seul élément propre à chaque projet — vide ici, à
-   remplir projet par projet. */
-.brand .mark {
-    grid-column: 1;
-    grid-row: 1 / span 2;
-    height: 34px;
-    width: auto;
-    display: block;
-}
-
-.brand h1 {
-    grid-column: 2;
-    grid-row: 1;
-    margin: 0;
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: 21px;
-    letter-spacing: -0.02em;
-    text-transform: uppercase;
-    line-height: 1;
-    color: var(--scrap-white);
-    transform: rotate(-1deg);
-    transform-origin: left center;
-    position: relative;
-}
-
-/* cuivre sur brun à 21px/900 : 2.95:1, au-dessus de la ligne 3:1 du
-   grand texte gras — ne pas réutiliser cette paire sous 18px. */
-.brand h1 em {
-    font-style: normal;
-    color: var(--scrap-copper);
-}
-
-.brand .sub {
-    grid-column: 2;
-    grid-row: 2;
-    margin-top: 7px;
-    font-family: var(--scrap-font-display);
-    font-size: var(--scrap-fs-nano);
-    font-weight: 700;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.72);
-}
-
-.brand .theme-toggle {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-    display: inline-flex;
-    align-self: center;
-    padding: 0.5em;
-    background: transparent;
-    color: inherit;
-    border: var(--scrap-border-w) solid currentColor;
-    border-radius: var(--scrap-radius);
-    cursor: pointer;
-    transform: rotate(2deg);
-    transition: transform var(--scrap-transition);
-}
-
-.brand .theme-toggle:hover { transform: rotate(-2deg) scale(1.05); }
-
-/* LE défilement de la colonne — le seul. Chaque module s'ouvre à sa hauteur
-   naturelle (cf. .mod / .mod-body) et c'est cette piste qui les fait défiler,
-   à la Pixelmator : on parcourt les sections, on ne défile jamais À
-   L'INTÉRIEUR de l'une d'elles. Un réglage ne se cache donc jamais derrière
-   un second niveau de scroll qu'il faut deviner. */
-.modules {
-    flex: 1 1 auto;
-    /* sans ça, un conteneur flex refuse de descendre sous la taille de son
-       contenu et le défilement ne s'enclenche jamais */
-    min-height: 0;
-    overflow-y: auto;
-    /* overflow-y:auto force le calcul de overflow-x : sans le figer à
-       hidden, l'ombre dure de .mod lève une barre horizontale. */
-    overflow-x: hidden;
-    padding: 10px 14px 10px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-/* Volontairement un <div> et non un <details> : ce dernier impose sa propre
-   boîte de rendu au contenu, ce qui interdisait déjà de le mettre en flex
-   colonne comme ici. */
-.mod {
-    position: relative;
-    background: var(--scrap-surface);
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    box-shadow: var(--scrap-shadow-sm);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    /* Ni grandir ni RÉTRÉCIR : un module fait la taille de son contenu, qu'il
-       soit seul ouvert ou quatre. C'est ce 0 0 qui garantit qu'aucun réglage
-       ne se retrouve comprimé hors de vue quand la colonne se remplit — le
-       débordement part alors dans .modules, à qui il revient. */
-    flex: 0 0 auto;
-}
-
-.mod::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: var(--scrap-texture-opacity);
-    background-image: var(--scrap-grain);
-}
-
-.mod-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: var(--scrap-space-2) var(--scrap-space-3);
-    border: 0;
-    background: var(--scrap-bg-alt);
-    font-family: inherit;
-    text-align: left;
-    cursor: pointer;
-    user-select: none;
-    flex: 0 0 auto;
-    position: relative;
-    transition: background 0.14s ease;
-}
-
-.mod-head:hover { background: var(--scrap-border-soft); }
-
-/* Ouvert : la card-head SCRAP, sur l'encre forte du thème (noire en clair,
-   blanche en sombre) — écart voulu vis-à-vis de card.ts, qui l'utilise
-   toujours : avec 4+ modules empilés, un ink-strong permanent donnerait
-   quatre barres pleines en sombre. Le lier à l'état ouvert en fait aussi
-   un signal d'accordéon plus fort que l'ancien titre ambre. */
-.mod.open .mod-head {
-    background: var(--scrap-ink-strong);
-    border-bottom: var(--scrap-border-w) solid var(--scrap-border);
-}
-
-.mod.open .mod-head:hover { background: var(--scrap-ink-strong); }
-
-/* Rivets cuivre flanquant l'entête ouverte — en CSS pur, zéro balisage
-   Razor à ajouter. */
-.mod.open .mod-head::before,
-.mod.open .mod-head::after {
-    content: '';
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--scrap-copper);
-    flex: none;
-}
-
-.mod-title {
-    flex: 1;
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-micro);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--scrap-ink-muted);
-}
-
-/* sur ink-strong, l'encre qui contraste est --scrap-bg : blanc en clair,
-   quasi noir en sombre — l'inversion exacte dont on a besoin. */
-.mod.open .mod-title { color: var(--scrap-bg); }
-
-.chev {
-    width: 15px;
-    height: 15px;
-    flex: none;
-    stroke: var(--scrap-accent);
-    stroke-width: 3;
-    stroke-linecap: butt;
-    fill: none;
-    transition: transform 0.22s cubic-bezier(0.3, 0, 0.2, 1);
-}
-
-.mod:not(.open) .chev { transform: rotate(180deg); }
-
-/* Aucune contrainte de hauteur, donc aucun défilement interne : le corps fait
-   la taille de ce qu'il contient et le module grandit avec lui. Les ombres de
-   défilement qui vivaient ici (deux dégradés « local » masquant deux radiales
-   « scroll ») ont disparu avec la scroller qu'elles annotaient. */
-.mod-body {
-    padding: 4px 14px 8px;
-}
-
-/* le coup de pinceau qui ferme chaque module, à la place des trois points */
-.mod-body::after {
-    content: '';
-    display: block;
-    height: 6px;
-    width: 60%;
-    margin: 14px auto 8px;
-    background: currentColor;
-    color: var(--scrap-border-soft);
-    clip-path: polygon(
-        0 40%, 8% 10%, 20% 55%, 33% 20%, 47% 70%, 60% 15%,
-        72% 60%, 85% 25%, 100% 50%, 100% 80%, 84% 55%, 70% 95%,
-        55% 45%, 41% 100%, 28% 60%, 14% 90%, 0 70%
-    );
-    opacity: 0.6;
-}
-
-/* ---------------- contrôles ---------------- */
-
-.ctl { margin: 14px 0; }
-
-.ctl-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 6px;
-}
-
-.ctl-name {
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-micro);
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
     color: var(--scrap-ink);
 }
 
-.ctl-val {
-    font-family: var(--scrap-font-num);
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--scrap-accent-text);
+/* ---------------- barre du haut ---------------- */
+
+.dg-head {
+    grid-area: head;
+    display: flex;
+    align-items: center;
+    gap: var(--scrap-space-2);
+    min-width: 0;
+    padding: 0 var(--scrap-space-3) 0 var(--scrap-space-4);
+    border-bottom: 1px solid var(--scrap-line);
+    background: var(--scrap-chrome);
+}
+
+.dg-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--scrap-space-2);
+    color: var(--scrap-ink-strong);
+    font: var(--scrap-weight-strong) var(--scrap-fs-l) / 1 var(--scrap-font-display);
     white-space: nowrap;
 }
 
-/* texte de lecture, pas de l'ornement : il lui faut un vrai contraste */
-.note {
-    margin-top: 8px;
-    font-size: var(--scrap-fs-mini);
-    line-height: 1.55;
-    color: var(--scrap-ink-muted);
+/* Le seul signe qui change d'un outil à l'autre */
+.dg-mark {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--scrap-radius-m);
+    background: var(--scrap-copper);
+    color: var(--scrap-white);
 }
 
-/* --- slider : piste fine, gros bouton rond bordé, bornes de part et d'autre --- */
-
-.sld {
+.dg-file {
     display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.lim {
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-nano);
-    color: var(--scrap-ink-muted);
-    flex: none;
-    min-width: 12px;
-    text-align: center;
-}
-
-.sld input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    flex: 1 1 auto;
+    align-items: baseline;
+    gap: var(--scrap-space-2);
     min-width: 0;
-    /* une poignée 18px bordée 2px + ombre dure réclame plus de boîte que
-       l'ancienne piste ; --pct reste un pourcentage, pas un ratio (voir
-       Pct() côté C#, 18 sites d'appel — pas de raison de renommer en
-       --fill façon scrap-ui pour ça). */
-    height: 26px;
+    margin-left: var(--scrap-space-2);
+    padding-left: var(--scrap-space-3);
+    border-left: 1px solid var(--scrap-line);
+    color: var(--scrap-ink);
+    font-size: var(--scrap-fs-ui);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.dg-file > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dg-file small {
+    color: var(--scrap-ink-muted);
+    font-size: var(--scrap-fs-s);
+    font-variant-numeric: tabular-nums;
+}
+
+.dg-spacer {
+    flex: 1;
+}
+
+/* Bascule de thème : le soleil en sombre, la lune en clair */
+.dg-theme .dg-sun,
+:root[data-scrap-theme='dark'] .dg-theme .dg-moon {
+    display: none;
+}
+
+:root[data-scrap-theme='dark'] .dg-theme .dg-sun {
+    display: inline-block;
+}
+
+/* ---------------- inspecteur ---------------- */
+
+.dg-inspector {
+    grid-area: inspector;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-left: 1px solid var(--scrap-line);
+    background: var(--scrap-surface);
+}
+
+.dg-inspector__scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 var(--scrap-space-4) var(--scrap-space-4);
+}
+
+/* Le premier accordéon n'a pas de filet au-dessus : la barre du haut en tient lieu */
+.dg-inspector__scroll > .scrap-disclosure:first-child {
+    border-top: 0;
+}
+
+.dg-inspector .scrap-disclosure__body {
+    gap: var(--scrap-space-4);
+}
+
+/* Aide sous un réglage */
+.dg-note {
     margin: 0;
-    background: transparent;
-    cursor: pointer;
+    color: var(--scrap-ink-muted);
+    font-size: var(--scrap-fs-s);
+    line-height: 1.45;
 }
 
-.sld input[type="range"]::-webkit-slider-runnable-track {
-    height: 5px;
-    border-radius: var(--scrap-radius);
-    background: linear-gradient(90deg, var(--scrap-accent) 0 var(--pct, 0%), var(--scrap-border-soft) var(--pct, 0%) 100%);
+.dg-note .scrap-kbd {
+    font-size: var(--scrap-fs-xs);
 }
 
-.sld input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    margin-top: -6.5px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: 50%;
-    background: var(--scrap-accent);
-    box-shadow: 2px 2px 0 var(--scrap-border);
-    transition: transform 0.12s ease;
+.dg-inspector .scrap-props {
+    font-size: var(--scrap-fs-s);
 }
 
-.sld input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
-.sld input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.95); }
-
-/* Firefox remplit la piste tout seul, pas besoin de --pct */
-.sld input[type="range"]::-moz-range-track {
-    height: 5px;
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-border-soft);
+/* Champ seed : à la largeur du réglage, pas de toute la colonne */
+.dg-seed {
+    max-width: 10rem;
 }
 
-.sld input[type="range"]::-moz-range-progress {
-    height: 5px;
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-accent);
+.dg-actions {
+    flex: none;
+    display: grid;
+    gap: var(--scrap-space-2);
+    padding: var(--scrap-space-3) var(--scrap-space-4);
+    border-top: 1px solid var(--scrap-line);
+    background: var(--scrap-surface);
 }
 
-.sld input[type="range"]::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: 50%;
-    background: var(--scrap-accent);
-    box-shadow: 2px 2px 0 var(--scrap-border);
+.dg-actions__row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--scrap-space-1);
 }
 
-/* --- curseur double : une seule piste, deux poignées (un intervalle) ---
+.dg-actions__row .scrap-btn {
+    flex: 1 1 auto;
+}
+
+.dg-actions > .scrap-btn--primary {
+    width: 100%;
+}
+
+/* ---------------- curseur double (une piste, deux poignées) ----------------
 
    Deux <input type="range"> superposés plutôt qu'un contrôle maison : on garde
-   gratuitement le clavier, le focus, le pas et la sémantique native. L'input
-   ne reçoit pas la souris (pointer-events: none), SEULES ses poignées la
-   reçoivent — sans ça celui du dessus couvrirait toute la piste et l'autre
-   serait inatteignable. Contrepartie assumée : cliquer la piste ne déplace
-   rien, il faut saisir une poignée.
+   le clavier, le focus, le pas et la sémantique native. L'input ne reçoit pas
+   la souris, seules ses poignées la reçoivent : sans ça, celui du dessus
+   couvrirait la piste et l'autre serait inatteignable.
 
-   Poignées superposées : ce n'est jamais un piège, à condition que l'appelant
-   trie ses deux valeurs (min/max) avant de les afficher — la poignée du dessus
-   reste saisissable et le tri rétablit l'intervalle quel que soit celui des
-   deux inputs qui porte la plus grande valeur.
+   --lo et --hi sont des ratios 0..1 : le remplissage se cale sur le centre des
+   poignées, qui parcourt [8px, largeur − 8px]. L'appelant trie ses deux valeurs
+   avant de les passer, si bien que les poignées peuvent se croiser. Mêmes
+   piste et poignées que .scrap-range dans la lib. */
 
-   --lo/--hi sont des RATIOS 0..1, là où le curseur simple prend --pct en
-   pourcentage : le remplissage doit être calé sur le CENTRE des poignées, qui
-   ne parcourt pas toute la largeur mais [9px, largeur-9px] (le natif encastre
-   la poignée dans la piste). Cette arithmétique-là demande un nombre, pas un
-   pourcentage. Sans elle, le remplissage décroche de 9px aux extrémités. */
-
-.sld2 {
+.dg-range2 {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--scrap-space-2);
 }
 
-.sld2-track {
+.dg-range2__track {
     position: relative;
     flex: 1 1 auto;
     min-width: 0;
-    height: 26px;
+    height: 20px;
 }
 
-.sld2-track::before,
-.sld2-track::after {
+.dg-range2__track::before,
+.dg-range2__track::after {
     content: '';
     position: absolute;
     top: 50%;
-    height: 5px;
-    margin-top: -2.5px;
-    border-radius: var(--scrap-radius);
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 2px;
     pointer-events: none;
 }
 
-/* piste creuse, sur toute la largeur */
-.sld2-track::before {
+.dg-range2__track::before {
     left: 0;
     right: 0;
-    background: var(--scrap-border-soft);
+    background: var(--scrap-line-strong);
 }
 
-/* portion retenue, bornée aux centres des deux poignées */
-.sld2-track::after {
-    left: calc(9px + var(--lo, 0) * (100% - 18px));
-    width: calc((var(--hi, 1) - var(--lo, 0)) * (100% - 18px));
+.dg-range2__track::after {
+    left: calc(8px + var(--lo, 0) * (100% - 16px));
+    width: calc((var(--hi, 1) - var(--lo, 0)) * (100% - 16px));
     background: var(--scrap-accent);
 }
 
-.sld2-track input[type="range"] {
+.dg-range2__track input[type='range'] {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
     margin: 0;
-    -webkit-appearance: none;
     appearance: none;
+    -webkit-appearance: none;
     background: transparent;
     pointer-events: none;
 }
 
-.sld2-track input[type="range"]::-webkit-slider-runnable-track {
-    height: 5px;
+.dg-range2__track input[type='range']::-webkit-slider-runnable-track {
+    height: 4px;
     background: transparent;
 }
 
-.sld2-track input[type="range"]::-webkit-slider-thumb {
+.dg-range2__track input[type='range']::-webkit-slider-thumb {
     -webkit-appearance: none;
-    appearance: none;
-    pointer-events: auto;
-    width: 18px;
-    height: 18px;
-    margin-top: -6.5px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
+    width: 16px;
+    height: 16px;
+    margin-top: -6px;
+    border: 2px solid var(--scrap-ink);
     border-radius: 50%;
-    background: var(--scrap-accent);
-    box-shadow: 2px 2px 0 var(--scrap-border);
-    cursor: pointer;
-    transition: transform 0.12s ease;
-}
-
-.sld2-track input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
-.sld2-track input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.95); }
-
-/* L'input couvrant toute la piste, le contour de focus global dessinerait un
-   grand rectangle sans rapport avec ce qui a le focus : on le reporte sur la
-   poignée, seule chose que l'utilisateur manipule. */
-.sld2-track input[type="range"]:focus-visible { outline: none; }
-
-.sld2-track input[type="range"]:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px var(--scrap-secondary), 2px 2px 0 var(--scrap-border);
-}
-
-/* Firefox */
-.sld2-track input[type="range"]::-moz-range-track {
-    height: 5px;
-    background: transparent;
-}
-
-/* sinon Firefox peint sa propre progression par-dessus notre remplissage */
-.sld2-track input[type="range"]::-moz-range-progress {
-    background: transparent;
-}
-
-.sld2-track input[type="range"]::-moz-range-thumb {
+    background: var(--scrap-surface);
     pointer-events: auto;
-    width: 18px;
-    height: 18px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: 50%;
-    background: var(--scrap-accent);
-    box-shadow: 2px 2px 0 var(--scrap-border);
     cursor: pointer;
+    transition: transform var(--scrap-dur) var(--scrap-ease);
 }
 
-.sld2-track input[type="range"]:focus-visible::-moz-range-thumb {
-    box-shadow: 0 0 0 3px var(--scrap-secondary), 2px 2px 0 var(--scrap-border);
+.dg-range2__track input[type='range']:active::-webkit-slider-thumb {
+    transform: scale(1.15);
 }
 
-/* --- select --- */
-
-.pick {
-    position: relative;
-}
-
-.pick select {
-    width: 100%;
-    appearance: none;
-    background: var(--scrap-bg-alt);
-    color: var(--scrap-ink);
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    padding: 9px 34px 9px 11px;
-    font-family: var(--scrap-font-body);
-    font-size: 12px;
-    font-weight: 700;
-    cursor: pointer;
-    /* chevron anguleux cuivre — remplace .pick::after, ne pas garder les deux */
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='10'%3E%3Cpath d='M1 1h12L7 9 1 1Z' fill='%23956140'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.8em center;
-    transition: border-color 0.14s ease, box-shadow 0.14s ease;
-}
-
-.pick select:hover { border-color: var(--scrap-accent); }
-.pick select:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
-
-.num {
-    width: 100%;
-    background: var(--scrap-bg-alt);
-    color: var(--scrap-ink);
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    padding: 9px 11px;
-    font-family: var(--scrap-font-num);
-    font-size: 12px;
-    font-weight: 600;
-    transition: box-shadow 0.14s ease;
-}
-
-.num:focus { outline: none; box-shadow: var(--scrap-shadow-sm); }
-
-/* --- case à cocher : coche au marqueur, désaxée --- */
-
-.tick {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 11px 0;
-    font-size: var(--scrap-fs-mini);
-    font-weight: 500;
-    color: var(--scrap-ink-muted);
-    cursor: pointer;
-    user-select: none;
-}
-
-.tick input {
-    appearance: none;
-    flex: none;
-    width: 15px;
-    height: 15px;
-    margin: 0;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-bg-alt);
-    cursor: pointer;
-    display: inline-grid;
-    place-content: center;
-    transform: rotate(-2deg);
-    transition: background 0.14s ease, border-color 0.14s ease;
-}
-
-.tick input::before {
-    content: '';
-    width: 10px;
-    height: 10px;
-    background: var(--scrap-accent);
-    transform: scale(0) rotate(8deg);
-    transition: transform 120ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
-    clip-path: polygon(14% 52%, 30% 40%, 44% 62%, 82% 8%, 98% 20%, 46% 96%, 4% 66%);
-}
-
-.tick input:checked::before { transform: scale(1.15) rotate(8deg); }
-.tick:hover input:not(:checked) { border-color: var(--scrap-accent); }
-.tick input:checked + span { color: var(--scrap-ink); }
-
-/* --- fichier --- */
-
-/* Fichier global (pas de CSS isolation Blazor ici) : pas besoin de ::deep,
-   le sélecteur atteint directement l'<input> du composant InputFile. */
-.drop input[type="file"] { display: none; }
-
-.drop label {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 9px;
-    padding: 15px 12px;
-    border: var(--scrap-border-w) dashed var(--scrap-border-soft);
-    border-radius: var(--scrap-radius);
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-micro);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--scrap-ink);
-    cursor: pointer;
-    transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
-}
-
-.drop label:hover {
-    border-color: var(--scrap-accent);
-    color: var(--scrap-accent-text);
-    background: color-mix(in srgb, var(--scrap-accent) 10%, transparent);
-}
-
-.meta {
-    margin-top: 12px;
-    font-size: var(--scrap-fs-mini);
-    line-height: 1.75;
-    color: var(--scrap-ink-muted);
-}
-
-.meta .name {
-    display: block;
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: 12px;
-    color: var(--scrap-ink-strong);
-    word-break: break-all;
-    margin-bottom: 3px;
-}
-
-.meta .spec { font-family: var(--scrap-font-num); color: var(--scrap-ink-muted); }
-
-.warn {
-    display: block;
-    margin-top: 6px;
-    color: var(--scrap-warning-text);
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    letter-spacing: 0.06em;
-}
-
-.alert {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border: var(--scrap-border-w) solid var(--scrap-danger);
-    border-left-width: 6px;
-    border-radius: var(--scrap-radius);
-    background: color-mix(in srgb, var(--scrap-danger) 12%, transparent);
-    box-shadow: var(--scrap-shadow-sm);
-    color: var(--scrap-danger-text);
-    font-size: 11px;
-    line-height: 1.5;
-    font-weight: 700;
-}
-
-/* ---------------- pied : actions ---------------- */
-
-.deck {
-    flex: none;
-    padding: 12px;
-    background: var(--scrap-bg-alt);
-    border-top: var(--scrap-border-w) solid var(--scrap-border);
-}
-
-.strike {
-    width: 100%;
-    padding: 14px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-accent);
-    color: var(--scrap-accent-ink);
-    font-family: var(--scrap-font-display);
-    font-size: 12px;
-    font-weight: 900;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    cursor: pointer;
-    box-shadow: var(--scrap-shadow);
-    transition: transform var(--scrap-transition), box-shadow var(--scrap-transition);
-}
-
-.strike:hover { transform: translate(-2px, -2px); box-shadow: var(--scrap-shadow-hover); }
-.strike:active { transform: translate(3px, 3px); box-shadow: var(--scrap-shadow-press); }
-.strike:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: var(--scrap-shadow); }
-
-.row {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    margin-top: 8px;
-}
-
-.row button {
-    padding: 9px 3px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
+.dg-range2__track input[type='range']::-moz-range-track {
+    height: 4px;
     background: transparent;
-    color: var(--scrap-ink-strong);
-    font-family: var(--scrap-font-display);
-    font-size: var(--scrap-fs-nano);
-    font-weight: 900;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+}
+
+/* sinon Firefox peint sa propre progression par-dessus le remplissage */
+.dg-range2__track input[type='range']::-moz-range-progress {
+    background: transparent;
+}
+
+.dg-range2__track input[type='range']::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--scrap-ink);
+    border-radius: 50%;
+    background: var(--scrap-surface);
+    pointer-events: auto;
     cursor: pointer;
-    box-shadow: var(--scrap-shadow-sm);
-    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
 }
 
-/* décalages divisés par deux par rapport au bouton primaire : un
-   soulèvement de 6px sur un bouton de ~70px dans une grille à gouttière
-   6px chevaucherait son voisin. */
-.row button:hover:not(:disabled) {
-    border-color: var(--scrap-accent);
-    color: var(--scrap-accent-text);
-    transform: translate(-1px, -1px);
-    box-shadow: 3px 3px 0 var(--scrap-border);
-}
-.row button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
-.row button:disabled { opacity: 0.3; cursor: default; transform: none; }
-
-.readout {
-    margin-top: 11px;
-    font-size: var(--scrap-fs-mini);
-    line-height: 1.6;
-    color: var(--scrap-ink-muted);
+/* L'input couvre toute la piste : le contour de focus va sur la poignée */
+.dg-range2__track input[type='range']:focus-visible {
+    outline: none;
 }
 
-.readout .tally {
-    font-family: var(--scrap-font-num);
-    color: var(--scrap-ink);
-    font-weight: 600;
+.dg-range2__track input[type='range']:focus-visible::-webkit-slider-thumb {
+    outline: var(--scrap-focus-ring);
+    outline-offset: 2px;
 }
 
-/* ---------------- écrans ---------------- */
+.dg-range2__track input[type='range']:focus-visible::-moz-range-thumb {
+    outline: var(--scrap-focus-ring);
+    outline-offset: 2px;
+}
 
-.stage {
+/* ---------------- barre d'état ---------------- */
+
+.dg-status {
+    grid-area: status;
+    font-variant-numeric: tabular-nums;
+}
+
+.dg-status .scrap-kbd {
+    padding: 0 4px;
+    font-size: var(--scrap-fs-xs);
+}
+
+/* ---------------- plateau ---------------- */
+
+.dg-stage {
+    grid-area: stage;
     position: relative;
     display: flex;
     min-width: 0;
-    padding: 14px;
+    min-height: 0;
+    padding: var(--scrap-space-3);
     background: var(--scrap-bg);
 }
 
-.stage::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: var(--scrap-texture-opacity);
-    background-image: var(--scrap-grain);
-}
-
-.blank {
-    position: relative;
+/* Aucun fichier : un cadre en pointillé, et ce qu'il faut faire */
+.dg-blank {
     flex: 1;
     display: grid;
     place-items: center;
-    border: var(--scrap-border-w) dashed var(--scrap-border-soft);
-    border-radius: var(--scrap-radius);
-}
-
-.blank div {
-    max-width: 400px;
-    text-align: center;
-}
-
-.blank h2 {
-    margin: 0 0 12px;
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: 13px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--scrap-ink);
-    transform: rotate(-1deg);
-}
-
-.blank p {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.75;
-    color: var(--scrap-ink-muted);
-    max-width: 40ch;
+    border: 1px dashed var(--scrap-line-strong);
+    border-radius: var(--scrap-radius-l);
 }
 
 .viz {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: var(--scrap-space-2);
     min-width: 0;
 }
 
-/* --- barre de vue : mini-carte + commandes de zoom --- */
+/* --- barre de vue : mini-carte et zoom --- */
 
 .viewbar {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--scrap-space-3);
 }
 
 .overview {
     position: relative;
     flex: 1 1 auto;
-    height: 36px;
+    height: 32px;
     min-width: 0;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-screen);
+    border: 1px solid var(--scrap-line);
+    border-radius: var(--scrap-radius-m);
+    background: var(--dg-screen);
     overflow: hidden;
     cursor: grab;
 }
 
-.overview:active { cursor: grabbing; }
+.overview:active {
+    cursor: grabbing;
+}
 
-.overview canvas {
+.overview canvas,
+.screen canvas,
+.diff-screen canvas {
     position: absolute;
     inset: 0;
+    display: block;
     width: 100%;
     height: 100%;
-    display: block;
 }
 
 .ov-region {
     position: absolute;
     top: 0;
     bottom: 0;
+    border-left: 1px solid var(--scrap-accent);
+    border-right: 1px solid var(--scrap-accent);
     background: color-mix(in srgb, var(--scrap-accent) 18%, transparent);
-    border-left: var(--scrap-border-w) solid var(--scrap-accent);
-    border-right: var(--scrap-border-w) solid var(--scrap-accent);
     pointer-events: none;
 }
 
-/* la fenêtre visible : c'est le repère qui dit « vous êtes ici » */
+/* la fenêtre visible : le repère « vous êtes ici » */
 .ov-window {
     position: absolute;
     top: 0;
     bottom: 0;
     min-width: 2px;
-    background: color-mix(in srgb, var(--scrap-screen-ink) 8%, transparent);
-    box-shadow: inset 0 0 0 var(--scrap-border-w) var(--scrap-screen-ink);
+    background: color-mix(in srgb, var(--scrap-ink) 6%, transparent);
+    box-shadow: inset 0 0 0 1px var(--scrap-ink-faint);
     pointer-events: none;
 }
 
@@ -864,7 +397,7 @@
     top: 0;
     bottom: 0;
     width: 2px;
-    background: var(--scrap-screen-ink);
+    background: var(--dg-screen-ink);
     opacity: 0.8;
     pointer-events: none;
 }
@@ -873,43 +406,21 @@
     flex: none;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 2px;
 }
 
-.zoomctl .axis { margin: 0 6px 0 0; }
-
-.zoomctl button {
-    min-width: 30px;
-    padding: 6px 9px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: transparent;
-    color: var(--scrap-ink-strong);
-    font-family: var(--scrap-font-display);
-    font-size: var(--scrap-fs-nano);
-    font-weight: 900;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-    box-shadow: var(--scrap-shadow-sm);
-    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
+.zoomctl .axis {
+    margin: 0 var(--scrap-space-2) 0 0;
 }
 
-.zoomctl button:hover:not(:disabled) {
-    border-color: var(--scrap-accent);
-    color: var(--scrap-accent-text);
-    transform: translate(-1px, -1px);
-    box-shadow: 3px 3px 0 var(--scrap-border);
-}
-.zoomctl button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
-.zoomctl button:disabled { opacity: 0.3; cursor: default; transform: none; }
+/* --- voies --- */
 
 .lanes {
     position: relative;
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: var(--scrap-space-2);
     min-height: 0;
 }
 
@@ -917,132 +428,99 @@
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: var(--scrap-space-1);
     min-height: 0;
 }
 
+/* L'entête passe au-dessus du calque de zone : ses boutons restent cliquables */
 .lane-head {
+    position: relative;
+    z-index: 1;
+    flex: none;
     display: flex;
     align-items: center;
-    gap: 9px;
-    flex: none;
+    gap: var(--scrap-space-2);
+    min-height: var(--scrap-control-s);
+    padding-left: 6px;
 }
 
 .tag {
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-nano);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--scrap-ink);
+    color: var(--scrap-ink-muted);
+    font-size: var(--scrap-fs-s);
+    font-weight: var(--scrap-weight-strong);
 }
 
-.lane.active .tag { color: var(--scrap-accent-text); }
+.lane.active .tag {
+    color: var(--scrap-ink-strong);
+}
 
 .axis {
     margin-left: auto;
-    font-family: var(--scrap-font-num);
-    font-size: var(--scrap-fs-nano);
-    color: var(--scrap-ink-muted);
+    color: var(--scrap-ink-faint);
+    font-family: var(--dg-num);
+    font-size: var(--scrap-fs-xs);
+    font-variant-numeric: tabular-nums;
 }
 
-/* tampon plein : indicateur d'état vivant, pas étiquette de catégorie */
+/* La voie que joue Espace */
 .live {
-    font-family: var(--scrap-font-display);
-    font-size: var(--scrap-fs-nano);
-    font-weight: 900;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--scrap-accent-ink);
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: var(--scrap-radius-s);
     background: var(--scrap-accent);
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    padding: 2px 7px;
-    transform: rotate(-2deg);
-    animation: scrap-stamp-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+    color: var(--scrap-accent-ink);
+    font-size: var(--scrap-fs-xs);
+    font-weight: var(--scrap-weight-strong);
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .live { animation: none; }
-}
-
-/* --- bouton de lecture --- */
-
-.cue {
-    flex: none;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: 50%;
-    background: transparent;
-    color: var(--scrap-ink);
-    cursor: pointer;
-    display: grid;
-    place-items: center;
-    box-shadow: var(--scrap-shadow-sm);
-    transition: transform 0.1s ease, box-shadow 0.1s ease, color 0.14s ease, border-color 0.14s ease;
-}
-
-.cue svg { width: 9px; height: 9px; fill: currentColor; }
-.cue:hover { border-color: var(--scrap-accent); color: var(--scrap-accent-text); }
-.cue:active { transform: translate(2px, 2px); box-shadow: var(--scrap-shadow-press); }
-
+/* Bouton de lecture d'une voie : un .scrap-icon-btn, en cuivre sur la voie active */
 .lane.active .cue {
-    border-color: var(--scrap-accent);
     color: var(--scrap-accent-text);
 }
 
-.lane.active .cue.on {
+.lane.active .cue[aria-pressed='true'] {
     background: var(--scrap-accent);
     color: var(--scrap-accent-ink);
 }
 
-/* --- surfaces de tracé --- */
+/* --- écrans de tracé --- */
 
 .screen {
     position: relative;
     flex: 1 1 auto;
-    min-height: 94px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-screen);
+    min-height: 80px;
+    border: 1px solid var(--scrap-line);
+    border-radius: var(--scrap-radius-m);
+    background: var(--dg-screen);
     overflow: hidden;
     cursor: crosshair;
 }
 
-/* Un écran est une fenêtre, pas une plaque soulevée : pas d'ombre portée
-   (4px dans une gouttière de 9px se cognerait). Grain en dernier dans
-   l'ordre source pour peindre au-dessus du canvas et de la tête de
-   lecture ; pointer-events:none pour ne pas bloquer les poignées. */
+/* Grain léger, au-dessus du tracé ; il ne bloque pas les poignées */
 .screen::after {
     content: '';
     position: absolute;
     inset: 0;
+    background: var(--scrap-grain-url);
+    opacity: var(--scrap-grain-opacity);
+    mix-blend-mode: overlay;
     pointer-events: none;
-    opacity: var(--scrap-texture-opacity);
-    background-image: var(--scrap-grain);
-}
-
-.screen canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
 }
 
 .playhead {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 2px;
-    background: var(--scrap-screen-ink);
-    pointer-events: none;
     display: none;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--dg-screen-ink);
+    pointer-events: none;
 }
 
-/* --- zone temporelle + boucle --- */
+/* --- zone ciblée et boucle --- */
 
 .region {
     position: absolute;
@@ -1054,17 +532,24 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: var(--scrap-shade);
+    background: var(--dg-shade);
 }
 
-#dmShadeL { left: 0; width: 0; }
-#dmShadeR { right: 0; width: 0; }
+#dmShadeL {
+    left: 0;
+    width: 0;
+}
+
+#dmShadeR {
+    right: 0;
+    width: 0;
+}
 
 .region .handle {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: var(--scrap-border-w);
+    width: 2px;
     margin-left: -1px;
     background: var(--scrap-accent);
     pointer-events: auto;
@@ -1082,98 +567,85 @@
     width: 20px;
 }
 
+/* la prise, au milieu de la hauteur */
 .region .handle::after {
     content: '';
     position: absolute;
     top: 50%;
     left: -5px;
     width: 12px;
-    height: 30px;
-    margin-top: -15px;
+    height: 28px;
+    margin-top: -14px;
+    border: 2px solid var(--scrap-surface);
+    border-radius: 6px;
     background: var(--scrap-accent);
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    box-shadow: 2px 2px 0 var(--scrap-border);
 }
 
-/* le survol s'assombrit en clair et s'éclaircit en sombre — asymétrie
-   volontaire (« appuyé plus fort » vs « plus chaud »), préférable à un
-   cinquième token d'accent pour un seul état de survol. */
-.region .handle:hover::after { background: var(--scrap-accent-text); }
+.region .handle:hover::after {
+    background: var(--scrap-accent-hover);
+}
 
 .loop-zone {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: color-mix(in srgb, var(--scrap-screen-ink) 5%, transparent);
-    border-left: var(--scrap-border-w) dashed var(--scrap-screen-ink);
-    border-right: var(--scrap-border-w) dashed var(--scrap-screen-ink);
     display: none;
+    border-left: 1px dashed var(--scrap-data-loop);
+    border-right: 1px dashed var(--scrap-data-loop);
+    background: color-mix(in srgb, var(--scrap-data-loop) 16%, transparent);
 }
 
-body.dm-dragging { cursor: ew-resize; user-select: none; }
+body.dm-dragging {
+    cursor: ew-resize;
+    user-select: none;
+}
 
-/* --- bandeau du bas --- */
+/* --- bandeau du bas du plateau --- */
 
 .foot {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--scrap-space-3);
+    min-height: var(--scrap-control-s);
 }
 
 .keys {
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 7px;
-    font-family: var(--scrap-font-display);
-    font-weight: 700;
-    font-size: var(--scrap-fs-nano);
+    gap: var(--scrap-space-1) var(--scrap-space-2);
     color: var(--scrap-ink-muted);
-}
-
-/* dans une note, la touche doit rester dans le fil du texte */
-.note kbd {
-    padding: 0 4px;
-    box-shadow: 1px 1px 0 var(--scrap-border);
-    font-size: var(--scrap-fs-nano);
-    white-space: nowrap;
-}
-
-kbd {
-    display: inline-block;
-    padding: 1px 5px;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-bg-alt);
-    box-shadow: 2px 2px 0 var(--scrap-border);
-    font-family: var(--scrap-font-display);
-    font-weight: 900;
-    font-size: var(--scrap-fs-nano);
-    color: var(--scrap-ink-strong);
+    font-size: var(--scrap-fs-s);
 }
 
 .diff-screen {
-    flex: none;
-    height: 54px;
     position: relative;
-    border: var(--scrap-border-w) solid var(--scrap-border);
-    border-radius: var(--scrap-radius);
-    background: var(--scrap-screen);
+    flex: none;
+    height: 48px;
+    border: 1px solid var(--scrap-line);
+    border-radius: var(--scrap-radius-m);
+    background: var(--dg-screen);
     overflow: hidden;
 }
 
-.diff-screen canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-}
+/* ---------------- écran étroit ---------------- */
 
 @media (max-width: 900px) {
-    .studio { grid-template-columns: 1fr; height: auto; }
-    .rig { height: auto; border-right: 0; border-bottom: var(--scrap-border-w) solid var(--scrap-border); }
-    .stage { min-height: 70vh; }
+    .dg-app {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 52px minmax(70vh, auto) auto 24px;
+        grid-template-areas: 'head' 'stage' 'inspector' 'status';
+        height: auto;
+        min-height: 100dvh;
+    }
+
+    .dg-inspector {
+        border-left: 0;
+        border-top: 1px solid var(--scrap-line);
+    }
+
+    .dg-file small {
+        display: none;
+    }
 }

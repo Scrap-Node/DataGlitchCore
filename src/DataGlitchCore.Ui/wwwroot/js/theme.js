@@ -1,9 +1,13 @@
 // ------------------------------------------------------------------
-// DataGlitchCore — runtime de thème SCRAP UI (window.scrapTheme)
+// DataGlitchCore — runtime de thème Scrap UI (window.scrapTheme)
 //
 // Chargé dans <head>, EN BLOQUANT (pas de defer, pas en fin de <body>) :
 // l'attribut doit être posé sur <html> avant le tout premier rendu, sinon
 // la page clignote en clair puis bascule.
+//
+// Même contrat que ScrapTheme dans @scrap-node/scrap-ui : le thème suit
+// celui du système tant que rien n'est choisi, et un choix explicite est
+// mémorisé sous la clé « scrap-theme ».
 //
 // Partagé par DataBender et DataMosher : ne rien mettre ici qui nomme
 // l'un des deux softs en particulier.
@@ -19,6 +23,20 @@ window.scrapTheme = (function () {
 
     function read(k) {
         try { return localStorage.getItem(k); } catch (_) { return null; }
+    }
+
+    // Sonde de résolution des couleurs, créée au premier besoin : <body>
+    // n'existe pas encore quand ce script s'exécute dans <head>.
+    let probe = null;
+    function resolve(name) {
+        if (!probe) {
+            probe = document.createElement('i');
+            probe.setAttribute('aria-hidden', 'true');
+            probe.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none';
+        }
+        if (!probe.isConnected) (document.body || document.documentElement).appendChild(probe);
+        probe.style.color = 'var(' + name + ')';
+        return getComputedStyle(probe).color;
     }
 
     function apply(t) {
@@ -51,29 +69,28 @@ window.scrapTheme = (function () {
             apply(explicit);
         },
 
-        // Valeur brute d'un token, mémoïsée. Invalidée à chaque bascule.
-        // ATTENTION : getComputedStyle rend la custom property TELLE QUELLE.
-        // Un token défini en color-mix() reviendrait en texte brut et
-        // ctx.fillStyle le refuserait en silence — d'où la règle "littéral
-        // obligatoire" sur les tokens canvas, énoncée dans app.css.
+        // Couleur d'un token, résolue par le navigateur et mémoïsée ; le cache
+        // est vidé à chaque bascule. Les jetons de la lib sont écrits en
+        // light-dark(…) et en var(…) : lus tels quels par getComputedStyle,
+        // ils reviendraient en texte brut, que ctx.fillStyle refuse en
+        // silence. On les fait donc calculer par une sonde, dont la propriété
+        // color revient toujours en rgb(…) ou rgba(…).
         color(name) {
             let v = cache.get(name);
             if (v === undefined) {
-                v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+                v = resolve(name);
                 cache.set(name, v);
             }
             return v;
         },
 
-        // Triplet [r,g,b] d'un token hex. Mémoïsé sous une clé distincte.
+        // Triplet [r,g,b] d'un token. Mémoïsé sous une clé distincte.
         rgb(name) {
             const k = name + '#rgb';
             let v = cache.get(k);
             if (v === undefined) {
-                const h = this.color(name).replace('#', '');
-                v = h.length >= 6
-                    ? [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
-                    : [128, 128, 128];
+                const m = /rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(this.color(name));
+                v = m ? [Math.round(+m[1]), Math.round(+m[2]), Math.round(+m[3])] : [128, 128, 128];
                 cache.set(k, v);
             }
             return v;
