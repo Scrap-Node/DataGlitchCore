@@ -54,6 +54,9 @@ public static class Riff
     /// entier : <c>Walk(data, 0, data.Length)</c>, ce qui renvoie le chunk
     /// "RIFF" lui-même en premier, puis descend dedans.
     /// </summary>
+    /// <param name="data">Le fichier, ou au moins la région parcourue.</param>
+    /// <param name="from">Offset du premier chunk de la région.</param>
+    /// <param name="to">Fin de la région, exclusive.</param>
     /// <param name="tolerateTruncation">
     /// Accepter un fichier coupé net. Un chunk qui déborde de sa région est
     /// alors ramené à ce qui est réellement présent au lieu de faire lever.

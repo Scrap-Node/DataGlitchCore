@@ -6,6 +6,37 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- Paquet NuGet : le moteur partagé par DataBender et DataMosher, sans interface.
+       Le tag vX.Y.Z publie cette version (.github/workflows/release.yml). -->
+  <PropertyGroup>
+    <PackageId>DataGlitchCore</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Côme Chaslerie</Authors>
+    <Copyright>Copyright 2026 Côme Chaslerie</Copyright>
+    <Description>Moteur de destruction de fichiers partagé par DataBender et DataMosher : fichier en mémoire sous un plafond réglable avec l'original intact, passes de destruction reproductibles, masques de protection, journal pour annuler et rétablir, carte des octets modifiés, parcours des blocs RIFF. Aucun format ni aucune interface : chaque application branche les siens.</Description>
+    <PackageTags>glitch;databending;datamoshing;riff;wav;avi</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/Scrap-Node/DataGlitchCore</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- La documentation XML suit le paquet, pour l'IntelliSense des applications ;
+         les membres publics non commentés ne doivent pas noyer le build sous les avertissements. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- Build déterministe en CI : chemins normalisés, sources liées au commit -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="DataGlitchCore.Core.Tests" />
   </ItemGroup>

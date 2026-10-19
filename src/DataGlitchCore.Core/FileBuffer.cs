@@ -58,6 +58,10 @@ public sealed class FileBuffer
         return Load(Path.GetFileName(path), fs, maxBytes);
     }
 
+    /// <param name="fileName">Nom du fichier, gardé pour l'affichage et l'export.</param>
+    /// <param name="stream">Flux lu jusqu'au plafond.</param>
+    /// <param name="maxBytes">Plafond en octets : au-delà, le fichier est coupé et
+    /// <see cref="Truncated"/> le signale.</param>
     /// <param name="expectedLength">Taille attendue quand l'appelant la connaît
     /// alors que le flux, lui, ne la connaît pas (un flux d'upload navigateur
     /// n'est pas seekable, mais le fichier annonce sa taille). Sert uniquement

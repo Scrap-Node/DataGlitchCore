@@ -1,0 +1,42 @@
+# Publication du paquet DataGlitchCore sur nuget.org, déclenchée par un tag vX.Y.Z.
+# Le jeton est le secret NUGET_API_KEY du dépôt : une clé d'API nuget.org avec le
+# droit d'envoi sur le paquet DataGlitchCore.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      # Le tag est la source de vérité de la version : un décalage avec <Version>
+      # publierait un numéro qui ne veut rien dire.
+      - name: Vérifier que le tag correspond à la version du paquet
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(dotnet msbuild src/DataGlitchCore.Core/DataGlitchCore.Core.csproj -getProperty:Version)
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag v$TAG ≠ <Version> $VERSION"
+            exit 1
+          fi
+
+      # Un tag ne doit jamais publier ce qui ne passe pas les tests
+      - run: dotnet test -c Release
+
+      - run: dotnet pack src/DataGlitchCore.Core -c Release -o artifacts
+
+      # Le .snupkg posé à côté part avec le paquet, vers le serveur de symboles
+      - name: Publier
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}

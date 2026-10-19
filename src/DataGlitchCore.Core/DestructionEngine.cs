@@ -129,6 +129,10 @@ public static class DestructionEngine
     /// toute la zone même là où le post-traitement n'a rien laissé passer.
     /// </summary>
     /// <param name="baseOffset">Offset, dans le fichier, du premier octet de <paramref name="before"/>/<paramref name="after"/>.</param>
+    /// <param name="before">Octets avant le traitement.</param>
+    /// <param name="after">Octets après le traitement, de même longueur que <paramref name="before"/>.</param>
+    /// <param name="mergeGap">Écart toléré : deux plages modifiées séparées par au plus ce nombre
+    /// d'octets inchangés forment une seule écriture, plutôt qu'une poussière de petites.</param>
     public static List<ByteEdit> ToRuns(int baseOffset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, int mergeGap = 64)
     {
         var runs = new List<ByteEdit>();
