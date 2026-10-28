@@ -3,13 +3,28 @@ namespace DataGlitchCore.Core;
 /// <summary>
 /// Charge un fichier entièrement en mémoire (dans la limite du cap RAM) et garde
 /// deux copies : l'originale (immuable) pour la comparaison/reset, et la courante
-/// que le moteur de destruction modifie. Les offsets sont des <see cref="int"/> :
-/// le cap (200 Mo par défaut) reste très en dessous de 2 Go, donc l'indexation
-/// tableau est sûre. Au-delà, il faudra passer en memory-map (prévu pour la vidéo).
+/// que le moteur de destruction modifie. Les offsets sont des <see cref="int"/>,
+/// donc le cap ne peut pas dépasser <see cref="MaxSupportedBytes"/> — c'est la
+/// borne de l'indexation tableau, pas un choix de confort. Au-delà, il faudra
+/// passer en memory-map.
+///
+/// Compter DEUX fois le cap en mémoire vive (originale + courante), et davantage
+/// pendant le chargement si la taille du flux n'est pas connue d'avance : c'est
+/// ce que le paramètre <c>expectedLength</c> des <c>Load</c> sert à éviter.
 /// </summary>
 public sealed class FileBuffer
 {
+    /// <summary>Cap par défaut quand l'appelant n'en impose pas. C'est un
+    /// défaut, pas un plafond : voir <see cref="MaxSupportedBytes"/>.</summary>
     public const long DefaultMaxBytes = 200L * 1024 * 1024;
+
+    /// <summary>
+    /// Plafond réel, au-delà duquel un <c>byte[]</c> ne peut pas aller. Rend
+    /// explicite la borne qui était jusqu'ici implicite dans le choix d'offsets
+    /// <see cref="int"/> — utile dès qu'un réglage laisse l'utilisateur monter
+    /// le cap : sans elle, l'UI n'a aucun moyen de savoir où s'arrêter.
+    /// </summary>
+    public static readonly long MaxSupportedBytes = Array.MaxLength;
 
     private readonly byte[] _original;
     private readonly byte[] _current;
@@ -43,15 +58,24 @@ public sealed class FileBuffer
         return Load(Path.GetFileName(path), fs, maxBytes);
     }
 
-    public static FileBuffer Load(string fileName, Stream stream, long maxBytes = DefaultMaxBytes)
+    /// <param name="fileName">Nom du fichier, gardé pour l'affichage et l'export.</param>
+    /// <param name="stream">Flux lu jusqu'au plafond.</param>
+    /// <param name="maxBytes">Plafond en octets : au-delà, le fichier est coupé et
+    /// <see cref="Truncated"/> le signale.</param>
+    /// <param name="expectedLength">Taille attendue quand l'appelant la connaît
+    /// alors que le flux, lui, ne la connaît pas (un flux d'upload navigateur
+    /// n'est pas seekable, mais le fichier annonce sa taille). Sert uniquement
+    /// à allouer juste — voir <see cref="ReadCapped"/>.</param>
+    public static FileBuffer Load(string fileName, Stream stream, long maxBytes = DefaultMaxBytes, long? expectedLength = null)
     {
-        var (data, truncated) = ReadCapped(stream, maxBytes);
+        var (data, truncated) = ReadCapped(stream, maxBytes, expectedLength);
         return new FileBuffer(fileName, data, truncated);
     }
 
-    public static async Task<FileBuffer> LoadAsync(string fileName, Stream stream, long maxBytes = DefaultMaxBytes, CancellationToken ct = default)
+    /// <inheritdoc cref="Load(string,Stream,long,long?)"/>
+    public static async Task<FileBuffer> LoadAsync(string fileName, Stream stream, long maxBytes = DefaultMaxBytes, long? expectedLength = null, CancellationToken ct = default)
     {
-        var (data, truncated) = await ReadCappedAsync(stream, maxBytes, ct).ConfigureAwait(false);
+        var (data, truncated) = await ReadCappedAsync(stream, maxBytes, expectedLength, ct).ConfigureAwait(false);
         return new FileBuffer(fileName, data, truncated);
     }
 
@@ -73,9 +97,45 @@ public sealed class FileBuffer
 
     public void ResetToOriginal() => Array.Copy(_original, _current, _current.Length);
 
-    private static (byte[] data, bool truncated) ReadCapped(Stream stream, long maxBytes)
+    /// <summary>
+    /// Ramène un cap demandé dans le domaine du représentable. L'ancienne
+    /// version retombait sur <see cref="DefaultMaxBytes"/> dès que le cap
+    /// dépassait <see cref="int.MaxValue"/> : inoffensif tant que personne ne
+    /// dépassait le défaut, mais dès qu'un réglage laisse monter le cap, ça
+    /// tronquait un fichier de 2 Go à 200 Mo SANS RIEN DIRE. Un cap trop grand
+    /// est une demande à satisfaire au mieux, pas une erreur à punir.
+    /// </summary>
+    private static long ClampCap(long maxBytes) =>
+        maxBytes <= 0 ? DefaultMaxBytes : Math.Min(maxBytes, MaxSupportedBytes);
+
+    /// <summary>Taille connue d'avance, ou null s'il faut lire pour savoir.</summary>
+    private static long? KnownLength(Stream stream, long? expectedLength)
     {
-        if (maxBytes <= 0 || maxBytes > int.MaxValue) maxBytes = Math.Min(DefaultMaxBytes, int.MaxValue);
+        if (expectedLength is long n && n >= 0) return n;
+        if (!stream.CanSeek) return null;
+        long remaining = stream.Length - stream.Position;
+        return remaining >= 0 ? remaining : null;
+    }
+
+    private static (byte[] data, bool truncated) ReadCapped(Stream stream, long maxBytes, long? expectedLength)
+    {
+        maxBytes = ClampCap(maxBytes);
+
+        // Chemin dimensionné : quand la taille est connue, une seule allocation
+        // à la bonne taille. Le chemin par MemoryStream ci-dessous fait grossir
+        // son tampon par doublement PUIS le recopie dans ToArray(), soit un pic
+        // à ~3x la taille du fichier, auquel le Clone() du constructeur ajoute
+        // encore une copie. Invisible à 200 Mo, rédhibitoire près du plafond.
+        if (KnownLength(stream, expectedLength) is long known)
+        {
+            int want = (int)Math.Min(known, maxBytes);
+            var exact = new byte[want];
+            int got = stream.ReadAtLeast(exact, want, throwOnEndOfStream: false);
+            // le flux a menti sur sa taille : on garde ce qu'on a vraiment lu
+            if (got < want) Array.Resize(ref exact, got);
+            return (exact, known > maxBytes);
+        }
+
         using var ms = new MemoryStream();
         var chunk = new byte[81920];
         long total = 0;
@@ -95,9 +155,19 @@ public sealed class FileBuffer
         return (ms.ToArray(), truncated);
     }
 
-    private static async Task<(byte[] data, bool truncated)> ReadCappedAsync(Stream stream, long maxBytes, CancellationToken ct)
+    private static async Task<(byte[] data, bool truncated)> ReadCappedAsync(Stream stream, long maxBytes, long? expectedLength, CancellationToken ct)
     {
-        if (maxBytes <= 0 || maxBytes > int.MaxValue) maxBytes = Math.Min(DefaultMaxBytes, int.MaxValue);
+        maxBytes = ClampCap(maxBytes);
+
+        if (KnownLength(stream, expectedLength) is long known)
+        {
+            int want = (int)Math.Min(known, maxBytes);
+            var exact = new byte[want];
+            int got = await stream.ReadAtLeastAsync(exact, want, throwOnEndOfStream: false, ct).ConfigureAwait(false);
+            if (got < want) Array.Resize(ref exact, got);
+            return (exact, known > maxBytes);
+        }
+
         using var ms = new MemoryStream();
         var chunk = new byte[81920];
         long total = 0;

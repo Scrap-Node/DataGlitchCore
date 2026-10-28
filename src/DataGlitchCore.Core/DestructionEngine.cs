@@ -47,7 +47,7 @@ public static class DestructionEngine
     public static DestructionBatch BuildBatch(FileBuffer buffer, DestructionOptions options, DestructionMask mask)
     {
         int length = buffer.Length;
-        int blockSize = Math.Max(1, options.BlockSize);
+        int blockSize = Math.Max(MinBlockSize(options.Operator), options.BlockSize);
 
         // zone ciblée, en octets — le masque, pas ce plancher, protège
         int start = (int)Math.Clamp(options.RegionStart * length, 0, length);
@@ -129,6 +129,10 @@ public static class DestructionEngine
     /// toute la zone même là où le post-traitement n'a rien laissé passer.
     /// </summary>
     /// <param name="baseOffset">Offset, dans le fichier, du premier octet de <paramref name="before"/>/<paramref name="after"/>.</param>
+    /// <param name="before">Octets avant le traitement.</param>
+    /// <param name="after">Octets après le traitement, de même longueur que <paramref name="before"/>.</param>
+    /// <param name="mergeGap">Écart toléré : deux plages modifiées séparées par au plus ce nombre
+    /// d'octets inchangés forment une seule écriture, plutôt qu'une poussière de petites.</param>
     public static List<ByteEdit> ToRuns(int baseOffset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, int mergeGap = 64)
     {
         var runs = new List<ByteEdit>();
@@ -155,6 +159,25 @@ public static class DestructionEngine
 
         return runs;
     }
+
+    /// <summary>Longueur du motif que <see cref="DestructionOperator.DuplicateBlock"/>
+    /// recopie sur tout le bloc.</summary>
+    private const int DuplicateMotifLength = 4;
+
+    /// <summary>
+    /// Plus petit bloc sur lequel l'opérateur peut changer quoi que ce soit :
+    /// inverser 1 octet, ou répéter un motif de 4 octets sur 4 octets ou moins,
+    /// rend le bloc à l'identique. <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
+    /// relève <see cref="DestructionOptions.BlockSize"/> à ce minimum ; exposé
+    /// pour que l'UI puisse l'afficher plutôt que de laisser croire qu'un bloc
+    /// plus petit est appliqué.
+    /// </summary>
+    public static int MinBlockSize(DestructionOperator op) => op switch
+    {
+        DestructionOperator.Reverse => 2,
+        DestructionOperator.DuplicateBlock => DuplicateMotifLength + 1,
+        _ => 1,
+    };
 
     private static byte[] Apply(FileBuffer buffer, DestructionOptions o, Random rng, int off, int len, int virtualOff, PayloadSpace space, int maxShift)
     {
@@ -213,7 +236,7 @@ public static class DestructionEngine
             case DestructionOperator.DuplicateBlock:
             {
                 var src = buffer.Read(off, len);
-                int motif = Math.Min(4, len);
+                int motif = Math.Min(DuplicateMotifLength, len);
                 for (int i = 0; i < len; i++) dst[i] = src[i % motif];
                 break;
             }
@@ -224,7 +247,8 @@ public static class DestructionEngine
     private static string DescribeLabel(DestructionOptions o)
     {
         string seed = o.Seed is int s ? s.ToString() : "aléatoire";
-        return $"{o.Operator} · densité {o.Density:P0} · bloc {o.BlockSize}o · seed {seed}";
+        int block = Math.Max(MinBlockSize(o.Operator), o.BlockSize);
+        return $"{o.Operator} · densité {o.Density:P0} · bloc {block}o · seed {seed}";
     }
 
     /// <summary>

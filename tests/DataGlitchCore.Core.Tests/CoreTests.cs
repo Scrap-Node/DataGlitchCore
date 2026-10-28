@@ -25,6 +25,53 @@ public class CoreTests
         Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.Current.ToArray());
     }
 
+    [Fact]
+    public void FileBuffer_Clamps_An_Oversized_Cap_Instead_Of_Falling_Back()
+    {
+        // Un cap au-delà du représentable doit être ramené au plafond, PAS
+        // faire retomber sur le défaut : l'ancienne version renvoyait
+        // silencieusement à 200 Mo, ce qui aurait tronqué un fichier de 2 Go
+        // sans le moindre signe dès qu'un réglage laisse monter le cap.
+        var data = new byte[1000];
+        var buf = FileBuffer.Load("x.bin", new MemoryStream(data), maxBytes: long.MaxValue);
+        Assert.False(buf.Truncated);
+        Assert.Equal(1000, buf.Length);
+    }
+
+    [Fact]
+    public void FileBuffer_Sizes_Exactly_When_The_Length_Is_Known()
+    {
+        // Flux non seekable (cas d'un upload navigateur) : sans expectedLength
+        // il faut passer par le chemin à tampon croissant, avec il alloue juste.
+        // Les deux doivent produire le même contenu — c'est tout ce que
+        // l'appelant a le droit d'observer.
+        var data = Enumerable.Range(0, 500).Select(i => (byte)i).ToArray();
+
+        var blind = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096);
+        var sized = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096, expectedLength: data.Length);
+
+        Assert.Equal(data, blind.Current.ToArray());
+        Assert.Equal(data, sized.Current.ToArray());
+        Assert.False(sized.Truncated);
+    }
+
+    [Fact]
+    public void FileBuffer_Truncates_On_The_Sized_Path_Too()
+    {
+        var data = new byte[1000];
+        var buf = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 256, expectedLength: data.Length);
+        Assert.True(buf.Truncated);
+        Assert.Equal(256, buf.Length);
+    }
+
+    /// <summary>Flux qui refuse de dire sa taille — ce que fait le flux d'un
+    /// InputFile Blazor, et donc le cas qui décide du chemin de lecture.</summary>
+    private sealed class NonSeekableStream(byte[] data) : MemoryStream(data)
+    {
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+    }
+
     // ---- Journal ----
 
     [Fact]
@@ -208,6 +255,26 @@ public class CoreTests
         var batch = DestructionEngine.BuildBatch(buf, opts, mask);
 
         Assert.Empty(batch.Edits);
+    }
+
+    [Theory]
+    [InlineData(DestructionOperator.Reverse, 1)]
+    [InlineData(DestructionOperator.DuplicateBlock, 1)]
+    [InlineData(DestructionOperator.DuplicateBlock, 4)]
+    public void Engine_Operators_Still_Destroy_At_The_Smallest_Block_Sizes(DestructionOperator op, int blockSize)
+    {
+        // Les curseurs de bloc des deux apps descendent à 1 octet : Reverse sur
+        // 1 octet, ou la répétition d'un motif de 4 octets sur un bloc de 4 ou
+        // moins, ne changeaient strictement rien — 0 édition à 100 % de
+        // densité, bouton "Détruire" sans effet. Le moteur relève donc le bloc
+        // au minimum utile de l'opérateur.
+        var buf = FileBuffer.FromBytes("x", Enumerable.Range(0, 256).Select(i => (byte)i).ToArray());
+        var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = blockSize, Operator = op };
+
+        var batch = DestructionEngine.BuildBatch(buf, opts, DestructionMask.WholeBuffer);
+
+        Assert.NotEmpty(batch.Edits);
+        Assert.True(DestructionEngine.MinBlockSize(op) > blockSize);
     }
 
     [Fact]
