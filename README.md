@@ -16,6 +16,11 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
 - `HeaderInfo` : où commence la zone destructible, fourni par le parseur du format.
 - `DestructionMask` : les plages où une passe a le droit d'écrire.
 - `OperationJournal` : chaque passe est un cran d'annulation et de rétablissement.
+- `SequenceScript` : le montage d'une suite d'unités numérotées (les frames d'une vidéo,
+  des blocs d'échantillons) : supprimer, répéter, coller une plage ailleurs, avec
+  annuler et rétablir. Son plan se déroule en une sortie (`SequenceOutput`) qui dit,
+  pour chaque unité, d'où elle vient et à quelle position de l'original elle joue.
+  Le format réécrit le fichier à partir de cette sortie.
 - `DiffMap` : la part d'octets modifiés, colonne par colonne.
 - `ViewWindow` : la fenêtre visible, pour recalculer les rendus au zoom.
 - `Riff` : le parcours des blocs d'un fichier RIFF (WAV, AVI).
