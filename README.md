@@ -9,7 +9,8 @@ application branche son propre parseur et construit son propre écran.
 Tout est dans l'espace de noms `DataGlitchCore.Core`.
 
 - `FileBuffer` : le fichier en mémoire, sous un plafond réglable, avec l'original
-  intact pour comparer et revenir en arrière.
+  intact pour comparer et revenir en arrière. Son état courant s'écrit en flux, sans
+  copie, pour l'exporter.
 - `DestructionEngine` et `DestructionOptions` : une passe de destruction (mise à zéro,
   valeur fixe, XOR, rotation de bits, inversion, décalage, répétition de bloc),
   reproductible avec une seed fixée.
@@ -19,6 +20,9 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
 - `DiffMap` : la part d'octets modifiés, colonne par colonne.
 - `ViewWindow` : la fenêtre visible, pour recalculer les rendus au zoom.
 - `Riff` : le parcours des blocs d'un fichier RIFF (WAV, AVI).
+- `ExportFile` : l'écriture d'un export, tout ou rien. Le fichier s'écrit à côté de sa
+  cible sous un nom temporaire, puis la remplace d'un coup : une erreur ou une
+  annulation ne laisse ni fichier à moitié écrit, ni fichier existant écrasé.
 
 ## Installation
 
