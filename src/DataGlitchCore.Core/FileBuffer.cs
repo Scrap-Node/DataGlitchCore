@@ -95,6 +95,40 @@ public sealed class FileBuffer
 
     public byte[] SnapshotCurrent() => (byte[])_current.Clone();
 
+    /// <summary>Taille des écritures de <see cref="WriteCurrentToAsync(Stream, int, int, CancellationToken)"/> :
+    /// autant de points où une annulation peut l'arrêter.</summary>
+    internal const int WriteChunkSize = 1024 * 1024;
+
+    /// <summary>
+    /// Écrit l'état courant dans un flux, sans le cloner : un export ne coûte
+    /// plus une seconde fois la taille du fichier en mémoire, comme avec
+    /// <see cref="SnapshotCurrent"/>. Le buffer n'est pas verrouillé : à
+    /// l'appelant d'empêcher toute passe de l'écrire pendant la copie.
+    /// </summary>
+    public Task WriteCurrentToAsync(Stream destination, CancellationToken ct = default) =>
+        WriteCurrentToAsync(destination, 0, _current.Length, ct);
+
+    /// <summary>Écrit une plage de l'état courant dans un flux, sans la cloner.</summary>
+    /// <param name="destination">Flux où écrire.</param>
+    /// <param name="offset">Premier octet de la plage.</param>
+    /// <param name="count">Nombre d'octets à écrire.</param>
+    /// <param name="ct">Annule entre deux morceaux.</param>
+    public async Task WriteCurrentToAsync(Stream destination, int offset, int count, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (count > _current.Length - offset)
+            throw new ArgumentOutOfRangeException(nameof(count), "La plage dépasse la fin du buffer.");
+
+        for (int done = 0; done < count;)
+        {
+            int n = Math.Min(WriteChunkSize, count - done);
+            await destination.WriteAsync(_current.AsMemory(offset + done, n), ct).ConfigureAwait(false);
+            done += n;
+        }
+    }
+
     public void ResetToOriginal() => Array.Copy(_original, _current, _current.Length);
 
     /// <summary>
