@@ -33,8 +33,13 @@
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
+  <!-- LICENSE et NOTICE partent dans le paquet : la licence Apache (section 4)
+       demande de les joindre à toute redistribution, et PackageLicenseExpression
+       ne fait que nommer la licence. -->
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
