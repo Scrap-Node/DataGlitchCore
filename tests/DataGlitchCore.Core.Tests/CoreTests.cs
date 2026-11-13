@@ -96,6 +96,37 @@ public class CoreTests
         Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.Current.ToArray());
     }
 
+    [Fact]
+    public void Journal_Numbers_Each_Pass_When_It_Is_Applied()
+    {
+        var buf = FileBuffer.FromBytes("x.bin", new byte[8]);
+        var journal = new OperationJournal(buf);
+        DestructionBatch Pass(int at) => new("t", [new ByteEdit(at, [0], [1])]);
+
+        var a = Pass(0);
+        Assert.Equal(0, a.Id); // pas encore appliquée
+        journal.Apply(a);
+        var b = Pass(1);
+        journal.Apply(b);
+        Assert.Equal((1L, 2L), (a.Id, b.Id));
+
+        // annuler et rétablir gardent le numéro : c'est la même passe
+        journal.Undo();
+        journal.Redo();
+        Assert.Equal(2, b.Id);
+
+        // le compteur ne revient jamais en arrière, même après un retour à l'original
+        journal.ResetAll();
+        var c = Pass(2);
+        journal.Apply(c);
+        Assert.Equal(3, c.Id);
+
+        // une passe appliquée de nouveau est une nouvelle application
+        journal.Undo();
+        journal.Apply(c);
+        Assert.Equal(4, c.Id);
+    }
+
     // ---- Engine ----
 
     [Fact]

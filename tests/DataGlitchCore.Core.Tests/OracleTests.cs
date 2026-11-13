@@ -197,6 +197,7 @@ internal sealed class OracleScenario(int seed)
         Assert.Equal(_refJournal.CanUndo, _journal.CanUndo);
         Assert.Equal(_refJournal.CanRedo, _journal.CanRedo);
         Assert.Equal(_refJournal.History.Count, _journal.History.Count);
+        long lastId = 0;
         for (int i = 0; i < _refJournal.History.Count; i++)
         {
             var expected = _refJournal.History[i];
@@ -206,6 +207,9 @@ internal sealed class OracleScenario(int seed)
             Assert.Equal(expected.BytesChanged, actual.BytesChanged);
             Assert.Equal(expected.FirstOffset, actual.FirstOffset);
             Assert.Equal(expected.LastOffset, actual.LastOffset);
+            // numérotées à l'application, dans l'ordre de l'historique
+            Assert.True(actual.Id > lastId, $"passe {i} numérotée {actual.Id} après {lastId}");
+            lastId = actual.Id;
         }
     }
 
