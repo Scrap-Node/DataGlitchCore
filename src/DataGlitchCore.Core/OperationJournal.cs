@@ -18,6 +18,17 @@ public sealed class DestructionBatch
         Edits = edits;
     }
 
+    /// <summary>
+    /// Numéro donné par <see cref="OperationJournal.Apply"/> : il croît d'une
+    /// passe appliquée à la suivante, dans la vie du journal, et ne revient
+    /// jamais en arrière, même après un retour à l'original. Annuler puis
+    /// rétablir garde le numéro. 0 tant que la passe n'est pas appliquée.
+    ///
+    /// Une clé stable pour un état : une app peut s'en servir comme clé de
+    /// cache, plutôt que de l'identité de l'objet.
+    /// </summary>
+    public long Id { get; internal set; }
+
     public string Label { get; }
     public IReadOnlyList<ByteEdit> Edits { get; }
     public int EditCount => Edits.Count;
@@ -71,6 +82,7 @@ public sealed class OperationJournal
     private readonly FileBuffer _buffer;
     private readonly List<DestructionBatch> _undo = new();
     private readonly List<DestructionBatch> _redo = new();
+    private long _lastId;
 
     public OperationJournal(FileBuffer buffer) => _buffer = buffer;
 
@@ -78,11 +90,16 @@ public sealed class OperationJournal
     public bool CanRedo => _redo.Count > 0;
     public IReadOnlyList<DestructionBatch> History => _undo;
 
-    /// <summary>Applique une passe déjà construite et l'empile dans l'historique.</summary>
+    /// <summary>
+    /// Applique une passe déjà construite, lui donne son
+    /// <see cref="DestructionBatch.Id"/> et l'empile dans l'historique. Une
+    /// passe appliquée une seconde fois reçoit un nouveau numéro.
+    /// </summary>
     public void Apply(DestructionBatch batch)
     {
         foreach (var edit in batch.Edits)
             _buffer.Write(edit.Offset, edit.NewBytes);
+        batch.Id = ++_lastId;
         _undo.Add(batch);
         _redo.Clear();
     }

@@ -11,6 +11,12 @@ namespace DataGlitchCore.Core;
 /// Le temporaire est dans le dossier de la cible : sur le même volume, le
 /// renommage final est atomique, là où un déplacement depuis le dossier
 /// temporaire du système deviendrait une copie.
+///
+/// <see cref="Commit"/> force aussi l'écriture sur le disque : le temporaire
+/// avant le renommage, puis le dossier après. Une coupure de courant juste
+/// après ne laisse donc ni cible vide, ni ancienne version revenue d'entre
+/// les morts. Sous macOS, c'est <c>F_FULLFSYNC</c>, pas un simple
+/// <c>fsync</c> qui laisserait les données dans le cache du disque.
 /// </summary>
 public sealed class ExportFile : IDisposable
 {
@@ -53,12 +59,19 @@ public sealed class ExportFile : IDisposable
     public FileStream OpenWrite() =>
         new(TempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 1 << 16, useAsync: true);
 
-    /// <summary>Le temporaire prend la place de la cible, en la remplaçant si elle existe.</summary>
+    /// <summary>
+    /// Le temporaire prend la place de la cible, en la remplaçant si elle
+    /// existe. Il est forcé sur le disque avant, et le dossier après.
+    /// </summary>
+    /// <exception cref="IOException">L'écriture forcée a échoué. Si c'est
+    /// celle du dossier, le fichier est déjà en place.</exception>
     public void Commit()
     {
         if (_committed) throw new InvalidOperationException("Cet export est déjà en place.");
-        File.Move(TempPath, Destination, overwrite: true);
+        DurableFile.FlushFile(TempPath);
+        DurableFile.Move(TempPath, Destination);
         _committed = true;
+        DurableFile.FlushDirectory(Path.GetDirectoryName(Destination)!);
     }
 
     /// <summary>Sans <see cref="Commit"/>, supprime le temporaire.</summary>
@@ -78,7 +91,8 @@ public sealed class ExportFile : IDisposable
     /// <summary>
     /// Écrit <paramref name="destination"/> d'un seul tenant : la cible
     /// n'apparaît, ou n'est remplacée, qu'une fois <paramref name="write"/>
-    /// terminé sans erreur ni annulation.
+    /// terminé sans erreur ni annulation, et forcé sur le disque
+    /// (<see cref="Commit"/>).
     /// </summary>
     /// <param name="destination">Le fichier final.</param>
     /// <param name="write">Écrit le contenu dans le flux qu'on lui donne.</param>
