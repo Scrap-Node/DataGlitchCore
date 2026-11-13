@@ -156,4 +156,86 @@ public sealed class ExportTests : IDisposable
 
         Assert.Empty(Directory.GetFiles(_dir));
     }
+
+    // ---- écriture forcée sur le disque ----
+
+    /// <summary>Les étapes de l'écriture forcée, dans l'ordre, et ce que la cible contenait à chacune.</summary>
+    private List<string> ObserveDurability(string target)
+    {
+        var steps = new List<string>();
+        DurableFile.Observer.Value = (step, path) =>
+        {
+            string content = File.Exists(target) ? string.Join(',', File.ReadAllBytes(target)) : "absente";
+            steps.Add($"{step} {Path.GetFileName(path)} (cible : {content})");
+        };
+        return steps;
+    }
+
+    [Fact]
+    public async Task ExportFile_ForcesTheTemporaryToDiskBeforeTheRenameThenTheFolder()
+    {
+        string target = Path.Combine(_dir, "sortie.wav");
+        File.WriteAllBytes(target, [7, 7]);
+        var steps = ObserveDurability(target);
+
+        await ExportFile.WriteAsync(target, (s, ct) => s.WriteAsync(new byte[] { 1, 2, 3 }, ct).AsTask());
+
+        Assert.Equal(3, steps.Count);
+        // le temporaire est forcé alors que la cible est encore l'ancienne
+        Assert.Matches(@"^fichier \.sortie\.wav\.[0-9a-f]{8}\.tmp \(cible : 7,7\)$", steps[0]);
+        Assert.Equal("renommage sortie.wav (cible : 1,2,3)", steps[1]);
+        Assert.Equal($"dossier {Path.GetFileName(_dir)} (cible : 1,2,3)", steps[2]);
+    }
+
+    [Fact]
+    public void ExportFile_ForcesAFileWrittenByAnExternalToolToo()
+    {
+        string target = Path.Combine(_dir, "sortie.mp4");
+        var steps = ObserveDurability(target);
+
+        using (var export = ExportFile.Create(target))
+        {
+            File.WriteAllBytes(export.TempPath, [4, 2]);
+            export.Commit();
+        }
+
+        Assert.Equal(["fichier", "renommage", "dossier"], steps.Select(s => s.Split(' ')[0]));
+    }
+
+    [Fact]
+    public async Task ExportFile_AFailedWriteForcesNothing()
+    {
+        string target = Path.Combine(_dir, "sortie.wav");
+        var steps = ObserveDurability(target);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ExportFile.WriteAsync(target, (_, _) => throw new InvalidOperationException("en route")));
+
+        Assert.Empty(steps);
+    }
+
+    [Fact]
+    public void DurableFile_ForcesARealFolderOnThisSystem()
+    {
+        // le vrai appel système : F_FULLFSYNC sous macOS, fsync ailleurs
+        DurableFile.FlushDirectory(_dir);
+    }
+
+    [Fact]
+    public void DurableFile_ForcesARealFileOnThisSystem()
+    {
+        string path = Path.Combine(_dir, "f.bin");
+        File.WriteAllBytes(path, [1]);
+        DurableFile.FlushFile(path);
+        Assert.Equal(new byte[] { 1 }, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void DurableFile_RefusesAMissingFolderOrFile()
+    {
+        string missing = Path.Combine(_dir, "absent");
+        if (!OperatingSystem.IsWindows())
+            Assert.Throws<DirectoryNotFoundException>(() => DurableFile.FlushDirectory(missing));
+        Assert.Throws<FileNotFoundException>(() => DurableFile.FlushFile(missing));
+    }
 }
