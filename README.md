@@ -11,23 +11,33 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
 - `FileBuffer` : le fichier en mémoire, sous un plafond réglable, avec l'original
   intact pour comparer et revenir en arrière. Son état courant s'écrit en flux, sans
   copie, pour l'exporter.
+- `ByteView` : un état du fichier (`FileBuffer.OriginalView`, `FileBuffer.CurrentView`),
+  lu par fenêtres ou en flux positionnable (`OpenRead`), jamais copié en entier. Les spans
+  `Original` et `Current`, et `SnapshotCurrent`, sont obsolètes depuis la 0.3.0 et
+  disparaissent en 0.4.0, quand le fichier restera sur disque
+  ([#7](https://github.com/Scrap-Node/DataGlitchCore/issues/7)).
 - `DestructionEngine` et `DestructionOptions` : une passe de destruction (mise à zéro,
   valeur fixe, XOR, rotation de bits, inversion, décalage, répétition de bloc),
   reproductible avec une seed fixée.
 - `HeaderInfo` : où commence la zone destructible, fourni par le parseur du format.
 - `DestructionMask` : les plages où une passe a le droit d'écrire.
-- `OperationJournal` : chaque passe est un cran d'annulation et de rétablissement.
+- `OperationJournal` : chaque passe est un cran d'annulation et de rétablissement. Le
+  journal numérote les passes qu'il applique (`DestructionBatch.Id`), de quoi en faire
+  une clé de cache.
 - `SequenceScript` : le montage d'une suite d'unités numérotées (les frames d'une vidéo,
   des blocs d'échantillons) : supprimer, répéter, coller une plage ailleurs, avec
   annuler et rétablir. Son plan se déroule en une sortie (`SequenceOutput`) qui dit,
   pour chaque unité, d'où elle vient et à quelle position de l'original elle joue.
   Le format réécrit le fichier à partir de cette sortie.
-- `DiffMap` : la part d'octets modifiés, colonne par colonne.
+- `DiffMap` : la part d'octets modifiés, colonne par colonne, sur deux `ByteView`.
 - `ViewWindow` : la fenêtre visible, pour recalculer les rendus au zoom.
-- `Riff` : le parcours des blocs d'un fichier RIFF (WAV, AVI).
+- `Riff` : le parcours des blocs d'un fichier RIFF (WAV, AVI), sur un `ByteView` : seuls
+  les en-têtes sont lus.
 - `ExportFile` : l'écriture d'un export, tout ou rien. Le fichier s'écrit à côté de sa
   cible sous un nom temporaire, puis la remplace d'un coup : une erreur ou une
-  annulation ne laisse ni fichier à moitié écrit, ni fichier existant écrasé.
+  annulation ne laisse ni fichier à moitié écrit, ni fichier existant écrasé. Le
+  temporaire est forcé sur le disque avant le renommage, et le dossier après
+  (`F_FULLFSYNC` sous macOS) : une coupure de courant ne défait pas un export terminé.
 
 ## Installation
 
@@ -40,6 +50,16 @@ dotnet add package DataGlitchCore
 ```bash
 dotnet test
 dotnet pack src/DataGlitchCore.Core -c Release -o artifacts   # paquet et symboles
+```
+
+Les tests comprennent un oracle (`OracleTests`) : le moteur de la 0.2.0, recopié sous
+`tests/…/Reference`, sert de référence aux « mêmes octets à seed égale ». Des suites
+aléatoires de passes, d'annulations et de retours à l'original y comparent le cœur à
+chaque pas. Une suite qui échoue donne sa seed :
+
+```bash
+DGC_ORACLE_SEED=1234 dotnet test --filter Oracle   # rejouer une suite
+DGC_ORACLE_SEEDS=5000 dotnet test --filter Oracle  # en lancer davantage (150 par défaut)
 ```
 
 ## Publier une version
