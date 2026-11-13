@@ -13,8 +13,11 @@ namespace DataGlitchCore.Core;
 /// <c>fcntl(F_FULLFSYNC)</c>. <see cref="FileStream.Flush(bool)"/> le fait
 /// déjà pour un fichier : le <c>SystemNative_FSync</c> de .NET 9 appelle
 /// <c>F_FULLFSYNC</c> sous macOS. Un dossier, que .NET refuse d'ouvrir, passe
-/// par la libc. Sous Windows, il n'y a pas de dossier à forcer : le fichier
-/// l'est, le renommage reste à la charge du système.
+/// par la libc.
+///
+/// Sous Windows, où DataBender est distribué, un dossier ne se force pas :
+/// c'est le renommage lui-même qui s'écrit sur le disque avant de rendre la
+/// main, par <c>MoveFileEx(MOVEFILE_WRITE_THROUGH)</c>.
 /// </summary>
 internal static class DurableFile
 {
@@ -34,10 +37,15 @@ internal static class DurableFile
         Observer.Value?.Invoke("fichier", path);
     }
 
-    /// <summary>Renomme <paramref name="source"/> à la place de <paramref name="destination"/>, d'un coup.</summary>
+    /// <summary>
+    /// Renomme <paramref name="source"/> à la place de <paramref name="destination"/>,
+    /// d'un coup. Sous Windows, le renommage est écrit sur le disque avant de
+    /// rendre la main.
+    /// </summary>
     public static void Move(string source, string destination)
     {
-        File.Move(source, destination, overwrite: true);
+        if (OperatingSystem.IsWindows()) Win32.MoveWriteThrough(source, destination);
+        else File.Move(source, destination, overwrite: true);
         Observer.Value?.Invoke("renommage", destination);
     }
 
@@ -46,6 +54,43 @@ internal static class DurableFile
     {
         if (!OperatingSystem.IsWindows()) Posix.FlushDirectory(directory);
         Observer.Value?.Invoke("dossier", directory);
+    }
+
+    private static class Win32
+    {
+        private const uint ReplaceExisting = 0x1;   // MOVEFILE_REPLACE_EXISTING
+        private const uint WriteThrough = 0x8;      // MOVEFILE_WRITE_THROUGH
+
+        private const int FileNotFound = 2;         // ERROR_FILE_NOT_FOUND
+        private const int PathNotFound = 3;         // ERROR_PATH_NOT_FOUND
+        private const int AccessDenied = 5;         // ERROR_ACCESS_DENIED
+
+        public static void MoveWriteThrough(string source, string destination)
+        {
+            if (MoveFileEx(Extended(source), Extended(destination), ReplaceExisting | WriteThrough)) return;
+
+            int error = Marshal.GetLastPInvokeError();
+            string message = $"{Marshal.GetPInvokeErrorMessage(error)} : {source} → {destination}";
+            throw error switch
+            {
+                FileNotFound => new FileNotFoundException(message, source),
+                PathNotFound => new DirectoryNotFoundException(message),
+                AccessDenied => new UnauthorizedAccessException(message),
+                _ => new IOException(message, Marshal.GetHRForLastWin32Error()),
+            };
+        }
+
+        /// <summary>Un chemin complet, préfixé pour passer la limite de 260 caractères de l'API Win32.</summary>
+        private static string Extended(string path)
+        {
+            string full = Path.GetFullPath(path);
+            if (full.StartsWith(@"\\?\", StringComparison.Ordinal)) return full;
+            return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+        }
+
+        [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool MoveFileEx(string existingFileName, string newFileName, uint flags);
     }
 
     private static class Posix

@@ -37,7 +37,8 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
   cible sous un nom temporaire, puis la remplace d'un coup : une erreur ou une
   annulation ne laisse ni fichier à moitié écrit, ni fichier existant écrasé. Le
   temporaire est forcé sur le disque avant le renommage, et le dossier après
-  (`F_FULLFSYNC` sous macOS) : une coupure de courant ne défait pas un export terminé.
+  (`F_FULLFSYNC` sous macOS ; sous Windows, le renommage s'écrit directement sur le
+  disque) : une coupure de courant ne défait pas un export terminé.
 
 ## Installation
 
