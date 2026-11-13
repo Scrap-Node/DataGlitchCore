@@ -56,4 +56,6 @@ git tag v0.1.0 && git push origin v0.1.0
 
 ## Licence
 
-Apache 2.0.
+Apache 2.0, voir les fichiers `LICENSE` et `NOTICE`, joints aussi au paquet NuGet. La
+licence porte sur le code : elle ne cède ni le nom « Scrap », ni les logos, ni les autres
+signes distinctifs des projets Scrap Node.
