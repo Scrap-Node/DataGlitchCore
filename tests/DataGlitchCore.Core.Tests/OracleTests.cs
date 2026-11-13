@@ -211,6 +211,37 @@ internal sealed class OracleScenario(int seed)
             Assert.True(actual.Id > lastId, $"passe {i} numérotée {actual.Id} après {lastId}");
             lastId = actual.Id;
         }
+
+        CheckViews();
+    }
+
+    /// <summary>Ce que les vues rendent d'autre qu'une lecture complète : une plage, un flux, la carte des différences.</summary>
+    private void CheckViews()
+    {
+        var view = _buffer.CurrentView;
+        int length = _ref.Length;
+
+        int offset = _rng.Next(0, length + 1);
+        var part = new byte[_rng.Next(0, length - offset + 1)];
+        view.Read(offset, part);
+        AssertBytes("lecture d'une plage", _ref.Current.Slice(offset, part.Length), part);
+
+        using (var stream = view.OpenRead())
+        {
+            stream.Position = offset;
+            var streamed = new MemoryStream();
+            var chunk = new byte[_rng.Next(1, 70_000)];
+            int n;
+            while ((n = stream.Read(chunk, 0, chunk.Length)) > 0) streamed.Write(chunk, 0, n);
+            AssertBytes("flux", _ref.Current[offset..], streamed.ToArray());
+        }
+
+        int buckets = _rng.Next(-1, 2000);
+        int start = _rng.Next(-5, length + 5);
+        int count = _rng.Next(4) == 0 ? -1 : _rng.Next(-1, length + 5);
+        var expected = ReferenceDiffMap.Compute(_ref.Original, _ref.Current, buckets, start, count);
+        var actual = DiffMap.Compute(_buffer.OriginalView, view, buckets, start, count);
+        Assert.Equal(expected, actual);
     }
 
     private static void AssertBytes(string what, ReadOnlySpan<byte> expected, ReadOnlySpan<byte> actual)
@@ -446,7 +477,7 @@ internal static class OracleData
 /// <summary>Comment l'oracle lit le cœur : un seul endroit à changer quand les lectures changent.</summary>
 internal static class OracleRead
 {
-    public static byte[] Original(FileBuffer buffer) => buffer.Original.ToArray();
+    public static byte[] Original(FileBuffer buffer) => buffer.OriginalView.ReadAll();
 
-    public static byte[] Current(FileBuffer buffer) => buffer.Current.ToArray();
+    public static byte[] Current(FileBuffer buffer) => buffer.CurrentView.ReadAll();
 }

@@ -21,8 +21,8 @@ public class CoreTests
     {
         var buf = FileBuffer.FromBytes("x.bin", new byte[] { 1, 2, 3, 4 });
         buf.Write(1, new byte[] { 9, 9 });
-        Assert.Equal(new byte[] { 1, 2, 3, 4 }, buf.Original.ToArray());
-        Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.Current.ToArray());
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, buf.OriginalView.ReadAll());
+        Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.CurrentView.ReadAll());
     }
 
     [Fact]
@@ -50,8 +50,8 @@ public class CoreTests
         var blind = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096);
         var sized = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096, expectedLength: data.Length);
 
-        Assert.Equal(data, blind.Current.ToArray());
-        Assert.Equal(data, sized.Current.ToArray());
+        Assert.Equal(data, blind.CurrentView.ReadAll());
+        Assert.Equal(data, sized.CurrentView.ReadAll());
         Assert.False(sized.Truncated);
     }
 
@@ -86,14 +86,14 @@ public class CoreTests
         });
 
         journal.Apply(batch);
-        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.Current.ToArray());
+        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.CurrentView.ReadAll());
 
         journal.Undo();
-        Assert.Equal(new byte[] { 10, 20, 30, 40, 50 }, buf.Current.ToArray());
+        Assert.Equal(new byte[] { 10, 20, 30, 40, 50 }, buf.CurrentView.ReadAll());
         Assert.True(journal.CanRedo);
 
         journal.Redo();
-        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.Current.ToArray());
+        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.CurrentView.ReadAll());
     }
 
     [Fact]
@@ -185,9 +185,9 @@ public class CoreTests
         var opts = new DestructionOptions { Seed = 7, Density = 1.0, BlockSize = 8, Operator = DestructionOperator.Xor, XorMask = 0xAA };
 
         journal.Apply(DestructionEngine.BuildBatch(buf, opts));
-        Assert.NotEqual(buf.Original.ToArray(), buf.Current.ToArray());
+        Assert.NotEqual(buf.OriginalView.ReadAll(), buf.CurrentView.ReadAll());
         journal.Apply(DestructionEngine.BuildBatch(buf, opts)); // XOR involutif
-        Assert.Equal(buf.Original.ToArray(), buf.Current.ToArray());
+        Assert.Equal(buf.OriginalView.ReadAll(), buf.CurrentView.ReadAll());
     }
 
     // ---- DestructionMask (protection multi-régions, pour l'AVI) ----
@@ -240,7 +240,7 @@ public class CoreTests
 
         journal.Apply(DestructionEngine.BuildBatch(buf, opts, mask));
 
-        var current = buf.Current.ToArray();
+        var current = buf.CurrentView.ReadAll();
         for (int i = 0; i < original.Length; i++)
         {
             bool inRegion = regions.Any(r => i >= r.Start && i < r.End);

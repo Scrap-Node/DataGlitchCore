@@ -11,6 +11,12 @@ namespace DataGlitchCore.Core;
 /// Compter DEUX fois le cap en mémoire vive (originale + courante), et davantage
 /// pendant le chargement si la taille du flux n'est pas connue d'avance : c'est
 /// ce que le paramètre <c>expectedLength</c> des <c>Load</c> sert à éviter.
+///
+/// Les deux états se lisent par <see cref="OriginalView"/> et
+/// <see cref="CurrentView"/>. Les spans <see cref="Original"/> et
+/// <see cref="Current"/> sont obsolètes : à partir de la 0.4.0, l'original
+/// reste sur disque et l'état courant n'existe plus en entier
+/// (DataGlitchCore#7).
 /// </summary>
 public sealed class FileBuffer
 {
@@ -35,6 +41,8 @@ public sealed class FileBuffer
         _original = data;
         _current = (byte[])data.Clone();
         Truncated = truncated;
+        OriginalView = new ByteView(new ArraySource(_original));
+        CurrentView = new ByteView(new ArraySource(_current));
     }
 
     public string FileName { get; }
@@ -44,10 +52,21 @@ public sealed class FileBuffer
 
     public int Length => _current.Length;
 
+    /// <summary>Les octets d'origine, lus par fenêtres. Ils ne changent jamais.</summary>
+    public ByteView OriginalView { get; }
+
+    /// <summary>
+    /// L'état courant, lu par fenêtres. La vue suit les passes : ce qu'une
+    /// passe, une annulation ou un retour à l'original écrit s'y lit aussitôt.
+    /// </summary>
+    public ByteView CurrentView { get; }
+
     /// <summary>Octets d'origine, jamais modifiés (base de la diff et du reset).</summary>
+    [Obsolete("Lire l'original par OriginalView : à partir de la 0.4.0, il reste sur disque et ce span disparaît (DataGlitchCore#7).")]
     public ReadOnlySpan<byte> Original => _original;
 
     /// <summary>Octets courants, tels que modifiés par les passes de destruction.</summary>
+    [Obsolete("Lire l'état courant par CurrentView : à partir de la 0.4.0, il n'existe plus en entier et ce span disparaît (DataGlitchCore#7).")]
     public ReadOnlySpan<byte> Current => _current;
 
     public static FileBuffer FromBytes(string fileName, byte[] data) => new(fileName, data, truncated: false);
@@ -93,6 +112,8 @@ public sealed class FileBuffer
 
     internal void Write(int offset, ReadOnlySpan<byte> bytes) => bytes.CopyTo(_current.AsSpan(offset, bytes.Length));
 
+    /// <summary>Copie tout l'état courant en mémoire.</summary>
+    [Obsolete("Écrire l'état courant en flux (WriteCurrentToAsync, CurrentView.OpenRead) ou le lire par CurrentView : la copie complète disparaît en 0.4.0 (DataGlitchCore#7).")]
     public byte[] SnapshotCurrent() => (byte[])_current.Clone();
 
     /// <summary>Taille des écritures de <see cref="WriteCurrentToAsync(Stream, int, int, CancellationToken)"/> :
