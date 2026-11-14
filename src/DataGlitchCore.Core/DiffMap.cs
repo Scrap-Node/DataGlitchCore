@@ -92,6 +92,70 @@ public static class DiffMap
 
     private const int WindowSize = 1024 * 1024;
 
+    /// <summary>
+    /// La carte d'un buffer, entre son original et son état courant (spec §6.3).
+    /// Tant qu'une case fait moins de 4 Mio, elle compare les octets, comme la
+    /// surcharge sur deux vues. Au-delà, elle déduit chaque case des compteurs
+    /// que tient le journal, tranche d'1 Mio par tranche : une vue dézoomée
+    /// d'un gros fichier ne relit plus tout le fichier. Une tranche à cheval
+    /// sur deux cases leur est partagée au prorata.
+    /// </summary>
+    /// <param name="buffer">Le buffer.</param>
+    /// <param name="buckets">Nombre de colonnes.</param>
+    /// <param name="start">Premier octet comparé.</param>
+    /// <param name="length">Nombre d'octets comparés ; négatif : jusqu'à la fin.</param>
+    public static float[] Compute(FileBuffer buffer, int buckets, long start = 0, long length = -1)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        long n = buffer.Length;
+        long span = length < 0 ? n - start : length;
+        long clampedStart = Math.Clamp(start, 0, n);
+        span = Math.Clamp(span, 0, n - clampedStart);
+        if ((double)span / Math.Max(1, buckets) < buffer.Options.DirectDiffBucketBytes)
+            return Compute(buffer.Original, buffer.Current, buckets, start, length);
+
+        buckets = Math.Max(1, buckets);
+        var result = new float[buckets];
+        int shift = buffer.Options.ChunkShift;
+        long chunkSize = 1L << shift;
+        var changed = buffer.ChangedPerChunk;
+        double perBucket = (double)span / buckets;
+        for (int k = 0; k < buckets; k++)
+        {
+            long o0 = clampedStart + (long)(k * perBucket);
+            long o1 = k == buckets - 1 ? clampedStart + span : clampedStart + (long)((k + 1) * perBucket);
+            if (o1 <= o0) continue;
+            double total = 0;
+            for (long c = o0 >> shift; c <= (o1 - 1) >> shift; c++)
+            {
+                long c0 = c << shift, c1 = Math.Min(c0 + chunkSize, n);
+                long overlap = Math.Min(o1, c1) - Math.Max(o0, c0);
+                total += (double)changed[(int)c] * overlap / (c1 - c0);
+            }
+            result[k] = (float)(total / (o1 - o0));
+        }
+        return result;
+    }
+
+    /// <summary>Nombre d'octets qui diffèrent entre deux vues sur <c>[start, start + length)</c>, lus par fenêtres d'1 Mio.</summary>
+    internal static long CountChanged(ByteView a, ByteView b, long start, long length)
+    {
+        if (length <= 0) return 0;
+        using var x = new ByteWindow(a, WindowSize);
+        using var y = new ByteWindow(b, WindowSize);
+        long changed = 0;
+        for (long pos = start, end = start + length; pos < end;)
+        {
+            int max = (int)Math.Min(end - pos, int.MaxValue);
+            var p = x.From(pos, max);
+            var q = y.From(pos, max);
+            int count = Math.Min(p.Length, q.Length);
+            changed += CountDifferences(p[..count], q[..count]);
+            pos += count;
+        }
+        return changed;
+    }
+
     /// <summary>Nombre de positions où les deux plages, de même longueur, diffèrent.</summary>
     internal static long CountDifferences(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {

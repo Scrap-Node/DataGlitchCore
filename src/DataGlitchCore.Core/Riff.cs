@@ -17,23 +17,23 @@ namespace DataGlitchCore.Core;
 /// champ de taille. Pour un LIST, ceci inclut les 4 octets de
 /// <see cref="ListType"/> ; utiliser <see cref="DataSize"/> pour la charge
 /// utile réelle.</param>
-public sealed record RiffChunk(string Id, string? ListType, int Start, int Size)
+public sealed record RiffChunk(string Id, string? ListType, long Start, long Size)
 {
     private bool IsList => ListType is not null;
 
     /// <summary>Offset du premier octet de charge utile réelle — après
     /// id+taille (8 octets), et après le FourCC de sous-type pour un LIST
     /// (4 octets de plus).</summary>
-    public int DataStart => Start + 8 + (IsList ? 4 : 0);
+    public long DataStart => Start + 8 + (IsList ? 4 : 0);
 
     /// <summary>Taille de la charge utile réelle, hors FourCC de sous-type
     /// pour un LIST.</summary>
-    public int DataSize => Size - (IsList ? 4 : 0);
+    public long DataSize => Size - (IsList ? 4 : 0);
 
     /// <summary>Offset du chunk frère suivant — padding d'alignement 2
     /// octets inclus (RIFF impose qu'un chunk de taille impaire soit suivi
     /// d'un octet de bourrage).</summary>
-    public int NextStart => Start + 8 + Size + (Size & 1);
+    public long NextStart => Start + 8 + Size + (Size & 1);
 }
 
 public sealed class RiffFormatException(string message) : Exception(message);
@@ -91,17 +91,12 @@ public static class Riff
     /// <param name="to">Fin de la région, exclusive.</param>
     /// <param name="tolerateTruncation">Voir <see cref="Walk(ReadOnlySpan{byte}, int, int, bool)"/>.</param>
     /// <exception cref="RiffFormatException">Voir <see cref="Walk(ReadOnlySpan{byte}, int, int, bool)"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Une région au-delà de 2 Gio :
-    /// les offsets de <see cref="RiffChunk"/> restent sur 32 bits jusqu'à la 0.4.0.</exception>
     public static IReadOnlyList<RiffChunk> Walk(ByteView data, long from, long to, bool tolerateTruncation = false)
     {
         ArgumentNullException.ThrowIfNull(data);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(from, int.MaxValue);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(to, int.MaxValue);
-
         var result = new List<RiffChunk>();
         using var window = new ByteWindow(data, HeaderWindowSize);
-        WalkInto(new ViewSource(window), (int)from, (int)to, result, tolerateTruncation);
+        WalkInto(new ViewSource(window), from, to, result, tolerateTruncation);
         return result;
     }
 
@@ -112,10 +107,10 @@ public static class Riff
     /// </summary>
     private const int HeaderWindowSize = 16 * 1024;
 
-    private static void WalkInto<TSource>(TSource data, int from, int to, List<RiffChunk> into, bool tolerate)
+    private static void WalkInto<TSource>(TSource data, long from, long to, List<RiffChunk> into, bool tolerate)
         where TSource : IHeaderSource, allows ref struct
     {
-        int pos = from;
+        long pos = from;
         while (pos + 8 <= to)
         {
             string id = data.ReadFourCc(pos);
@@ -126,7 +121,7 @@ public static class Riff
                     $"Chunk '{id}' à l'offset {pos} déclare une taille de {declaredSize} octets, " +
                     "hors de portée (offsets 32 bits) — probablement un AVI OpenDML (> 2 Go), hors périmètre.");
             }
-            int size = (int)declaredSize;
+            long size = declaredSize;
 
             bool isList = id is "RIFF" or "LIST";
             if (isList && size < 4)
@@ -172,23 +167,23 @@ public static class Riff
     /// <summary>Ce que le parcours lit : un FourCC et une taille, aux offsets des en-têtes.</summary>
     private interface IHeaderSource
     {
-        string ReadFourCc(int pos);
-        uint ReadUInt32(int pos);
+        string ReadFourCc(long pos);
+        uint ReadUInt32(long pos);
     }
 
     private readonly ref struct SpanSource(ReadOnlySpan<byte> data) : IHeaderSource
     {
         private readonly ReadOnlySpan<byte> _data = data;
 
-        public string ReadFourCc(int pos) => Encoding.ASCII.GetString(_data.Slice(pos, 4));
+        public string ReadFourCc(long pos) => Encoding.ASCII.GetString(_data.Slice(checked((int)pos), 4));
 
-        public uint ReadUInt32(int pos) => BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(pos, 4));
+        public uint ReadUInt32(long pos) => BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(checked((int)pos), 4));
     }
 
     private readonly struct ViewSource(ByteWindow window) : IHeaderSource
     {
-        public string ReadFourCc(int pos) => Encoding.ASCII.GetString(window.Exactly(pos, 4));
+        public string ReadFourCc(long pos) => Encoding.ASCII.GetString(window.Exactly(pos, 4));
 
-        public uint ReadUInt32(int pos) => BinaryPrimitives.ReadUInt32LittleEndian(window.Exactly(pos, 4));
+        public uint ReadUInt32(long pos) => BinaryPrimitives.ReadUInt32LittleEndian(window.Exactly(pos, 4));
     }
 }

@@ -16,10 +16,10 @@ public class ByteViewTests
         var buf = FileBuffer.FromBytes("x", Ramp(100));
         var part = new byte[10];
 
-        buf.CurrentView.Read(42, part);
+        buf.Current.Read(42, part);
 
         Assert.Equal(Ramp(100)[42..52], part);
-        Assert.Equal(100, buf.CurrentView.Length);
+        Assert.Equal(100, buf.Current.Length);
     }
 
     [Theory]
@@ -29,26 +29,26 @@ public class ByteViewTests
     [InlineData(11, 0)]
     public void Read_Refuses_A_Range_Outside_The_View(long offset, int count)
     {
-        var view = FileBuffer.FromBytes("x", new byte[10]).CurrentView;
+        var view = FileBuffer.FromBytes("x", new byte[10]).Current;
         Assert.Throws<ArgumentOutOfRangeException>(() => view.Read(offset, new byte[count]));
     }
 
     [Fact]
     public void Read_Of_Nothing_At_The_End_Is_Fine()
     {
-        var view = FileBuffer.FromBytes("x", new byte[10]).CurrentView;
+        var view = FileBuffer.FromBytes("x", new byte[10]).Current;
         view.Read(10, Span<byte>.Empty);
     }
 
     [Fact]
-    public void CurrentView_Follows_Passes_Undo_And_Reset_While_OriginalView_Never_Moves()
+    public void Current_Follows_Passes_Undo_And_Reset_While_Original_Never_Moves()
     {
         var data = Ramp(64);
         var buf = FileBuffer.FromBytes("x", (byte[])data.Clone());
         var journal = new OperationJournal(buf);
-        var view = buf.CurrentView;
+        var view = buf.Current;
 
-        journal.Apply(new DestructionBatch("t", [new ByteEdit(3, [data[3]], [0xEE])]));
+        journal.Write(buf, 3, [0xEE]);
         Assert.Equal(0xEE, view.ReadAll()[3]);
 
         journal.Undo();
@@ -57,19 +57,16 @@ public class ByteViewTests
         journal.Redo();
         journal.ResetAll();
         Assert.Equal(data, view.ReadAll());
-        Assert.Equal(data, buf.OriginalView.ReadAll());
+        Assert.Equal(data, buf.Original.ReadAll());
     }
 
-#pragma warning disable CS0618 // les membres obsolètes marchent jusqu'à leur retrait, en 0.4.0
+#pragma warning disable CS0618 // les anciens noms des vues restent, obsolètes
     [Fact]
-    public void Obsolete_Spans_Still_Give_The_Same_Bytes_As_The_Views()
+    public void Old_View_Names_Still_Give_The_Views()
     {
         var buf = FileBuffer.FromBytes("x", Ramp(32));
-        new OperationJournal(buf).Apply(new DestructionBatch("t", [new ByteEdit(1, [7], [9])]));
-
-        Assert.Equal(buf.OriginalView.ReadAll(), buf.Original.ToArray());
-        Assert.Equal(buf.CurrentView.ReadAll(), buf.Current.ToArray());
-        Assert.Equal(buf.CurrentView.ReadAll(), buf.SnapshotCurrent());
+        Assert.Same(buf.Original, buf.OriginalView);
+        Assert.Same(buf.Current, buf.CurrentView);
     }
 #pragma warning restore CS0618
 
@@ -79,7 +76,7 @@ public class ByteViewTests
     public async Task OpenRead_Gives_A_Read_Only_Seekable_Stream_Of_The_Whole_State()
     {
         var data = Ramp(3 * 1024 * 1024 + 17);
-        using var stream = FileBuffer.FromBytes("x", data).CurrentView.OpenRead();
+        using var stream = FileBuffer.FromBytes("x", data).Current.OpenRead();
 
         Assert.True(stream.CanRead);
         Assert.True(stream.CanSeek);
@@ -96,7 +93,7 @@ public class ByteViewTests
     public void OpenRead_Seeks_From_Every_Origin()
     {
         var data = Ramp(100);
-        using var stream = FileBuffer.FromBytes("x", data).CurrentView.OpenRead();
+        using var stream = FileBuffer.FromBytes("x", data).Current.OpenRead();
         var one = new byte[1];
 
         Assert.Equal(90, stream.Seek(-10, SeekOrigin.End));
@@ -117,7 +114,7 @@ public class ByteViewTests
     [Fact]
     public void OpenRead_Gives_Independent_Streams()
     {
-        var view = FileBuffer.FromBytes("x", Ramp(10)).CurrentView;
+        var view = FileBuffer.FromBytes("x", Ramp(10)).Current;
         using var a = view.OpenRead();
         using var b = view.OpenRead();
 
@@ -129,7 +126,7 @@ public class ByteViewTests
     [Fact]
     public void OpenRead_Refuses_Writes_And_Reads_After_Dispose()
     {
-        var stream = FileBuffer.FromBytes("x", Ramp(10)).CurrentView.OpenRead();
+        var stream = FileBuffer.FromBytes("x", Ramp(10)).Current.OpenRead();
         Assert.Throws<NotSupportedException>(() => stream.Write([1], 0, 1));
         Assert.Throws<NotSupportedException>(() => stream.SetLength(3));
 
@@ -140,7 +137,7 @@ public class ByteViewTests
     [Fact]
     public async Task OpenRead_Honours_A_Cancelled_Token()
     {
-        using var stream = FileBuffer.FromBytes("x", Ramp(10)).CurrentView.OpenRead();
+        using var stream = FileBuffer.FromBytes("x", Ramp(10)).Current.OpenRead();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => stream.ReadAsync(new byte[4], new CancellationToken(canceled: true)).AsTask());
     }
@@ -157,17 +154,17 @@ public class ByteViewTests
         var buf = FileBuffer.FromBytes("x", (byte[])original.Clone());
         var journal = new OperationJournal(buf);
         journal.Apply(DestructionEngine.BuildBatch(buf, new DestructionOptions { Seed = 3, Density = 0.3, BlockSize = 4000 }));
-        var current = buf.CurrentView.ReadAll();
+        var current = buf.Current.ReadAll();
 
         foreach (int buckets in new[] { 1, 3, 7, 1600, original.Length + 10 })
         {
             Assert.Equal(
                 ReferenceDiffMap.Compute(original, current, buckets),
-                DiffMap.Compute(buf.OriginalView, buf.CurrentView, buckets));
+                DiffMap.Compute(buf.Original, buf.Current, buckets));
         }
         Assert.Equal(
             ReferenceDiffMap.Compute(original, current, 420, 1_048_570, 2_000_000),
-            DiffMap.Compute(buf.OriginalView, buf.CurrentView, 420, 1_048_570, 2_000_000));
+            DiffMap.Compute(buf.Original, buf.Current, 420, 1_048_570, 2_000_000));
     }
 
     [Fact]
@@ -197,7 +194,7 @@ public class ByteViewTests
     {
         // assez de chunks pour traverser plusieurs fenêtres d'en-têtes
         var bytes = Avi(frames: 3000, rng: new Random(1));
-        var view = FileBuffer.FromBytes("x.avi", bytes).CurrentView;
+        var view = FileBuffer.FromBytes("x.avi", bytes).Current;
 
         var expected = ReferenceRiff.Walk(bytes, 0, bytes.Length);
         var actual = Riff.Walk(view, 0, view.Length);
@@ -222,7 +219,7 @@ public class ByteViewTests
         int from = rng.Next(5) == 0 ? rng.Next(-4, 40) : 0;
         int to = rng.Next(5) == 0 ? rng.Next(0, bytes.Length + 40) : bytes.Length;
         bool tolerate = rng.Next(2) == 0;
-        var view = FileBuffer.FromBytes("x.avi", bytes).CurrentView;
+        var view = FileBuffer.FromBytes("x.avi", bytes).Current;
 
         IReadOnlyList<ReferenceRiffChunk>? expected = null;
         Exception? expectedError = null;
@@ -248,7 +245,7 @@ public class ByteViewTests
     [Fact]
     public void Riff_Walk_On_A_View_Refuses_Offsets_Beyond_32_Bits_Until_0_4()
     {
-        var view = FileBuffer.FromBytes("x", new byte[16]).CurrentView;
+        var view = FileBuffer.FromBytes("x", new byte[16]).Current;
         Assert.Throws<ArgumentOutOfRangeException>(() => Riff.Walk(view, 0, (long)int.MaxValue + 1));
     }
 
@@ -259,7 +256,7 @@ public class ByteViewTests
         {
             var e = expected[i];
             var a = actual[i];
-            Assert.Equal((e.Id, e.ListType, e.Start, e.Size), (a.Id, a.ListType, a.Start, a.Size));
+            Assert.Equal((e.Id, e.ListType, (long)e.Start, (long)e.Size), (a.Id, a.ListType, a.Start, a.Size));
         }
     }
 

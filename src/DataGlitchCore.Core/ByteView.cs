@@ -4,13 +4,11 @@ namespace DataGlitchCore.Core;
 
 /// <summary>
 /// Un état du fichier, lu par fenêtres : l'original ou l'état courant d'un
-/// <see cref="FileBuffer"/>. On n'y accède jamais d'un bloc : on copie la
-/// plage dont on a besoin dans un tampon à soi, ou on la lit en flux par
-/// <see cref="OpenRead"/>.
-///
-/// C'est ce qui permettra au buffer de ne plus tenir le fichier entier en
-/// mémoire (DataGlitchCore#7) : le code qui lit déjà par <see cref="ByteView"/>
-/// n'aura rien à changer quand l'original restera sur disque.
+/// <see cref="FileBuffer"/>, l'avant ou l'après d'une passe. On n'y accède
+/// jamais d'un bloc : on copie la plage dont on a besoin dans un tampon à soi,
+/// ou on la lit en flux par <see cref="OpenRead"/>. L'original reste sur
+/// disque, et l'état courant n'existe pas en entier : une lecture le recompose
+/// à partir de l'original et des segments des passes (DataGlitchCore#7).
 ///
 /// Les lectures concurrentes sont sûres. Une lecture pendant qu'une passe
 /// s'applique ne l'est pas : comme pour le reste du buffer, l'appelant les
@@ -53,22 +51,13 @@ public sealed class ByteView
     public Stream OpenRead() => new ByteViewStream(this);
 }
 
-/// <summary>Où une <see cref="ByteView"/> prend ses octets : un tableau aujourd'hui, des fichiers demain.</summary>
+/// <summary>Où une <see cref="ByteView"/> prend ses octets : l'original, ou l'original et des segments.</summary>
 internal abstract class ByteSource
 {
     public abstract long Length { get; }
 
     /// <summary>Lit une plage déjà vérifiée par <see cref="ByteView.Read"/>.</summary>
     public abstract void Read(long offset, Span<byte> destination);
-}
-
-/// <summary>Un tableau en mémoire, lu sans copie intermédiaire. S'il change, la vue le suit.</summary>
-internal sealed class ArraySource(byte[] data) : ByteSource
-{
-    public override long Length => data.LongLength;
-
-    public override void Read(long offset, Span<byte> destination) =>
-        data.AsSpan(checked((int)offset), destination.Length).CopyTo(destination);
 }
 
 /// <summary>Le flux de <see cref="ByteView.OpenRead"/>.</summary>

@@ -1,244 +1,238 @@
 namespace DataGlitchCore.Core;
 
 /// <summary>
-/// Charge un fichier entièrement en mémoire (dans la limite du cap RAM) et garde
-/// deux copies : l'originale (immuable) pour la comparaison/reset, et la courante
-/// que le moteur de destruction modifie. Les offsets sont des <see cref="int"/>,
-/// donc le cap ne peut pas dépasser <see cref="MaxSupportedBytes"/> — c'est la
-/// borne de l'indexation tableau, pas un choix de confort. Au-delà, il faudra
-/// passer en memory-map.
+/// Un fichier à détruire, sans jamais le tenir en entier en mémoire
+/// (spec dataglitchcore-buffer, §3). L'original reste là où l'application l'a
+/// copié, en lecture seule. L'état courant n'existe pas en entier : c'est
+/// l'original, plus une pile de segments, un par passe, écrits sur disque.
+/// Une lecture le recompose fenêtre par fenêtre (<see cref="Current"/>).
 ///
-/// Compter DEUX fois le cap en mémoire vive (originale + courante), et davantage
-/// pendant le chargement si la taille du flux n'est pas connue d'avance : c'est
-/// ce que le paramètre <c>expectedLength</c> des <c>Load</c> sert à éviter.
+/// Le processus ne garde que l'index et les compteurs de chaque segment
+/// (12 octets par Mio), et la passe en construction, plafonnée à 32 Mio.
 ///
-/// Les deux états se lisent par <see cref="OriginalView"/> et
-/// <see cref="CurrentView"/>. Les spans <see cref="Original"/> et
-/// <see cref="Current"/> sont obsolètes : à partir de la 0.4.0, l'original
-/// reste sur disque et l'état courant n'existe plus en entier
-/// (DataGlitchCore#7).
+/// Les écritures (passes, annulations) ne sont pas concurrentes : l'appelant
+/// les sérialise. Les lectures concurrentes sont sûres.
 /// </summary>
-public sealed class FileBuffer
+public sealed class FileBuffer : IDisposable
 {
-    /// <summary>Cap par défaut quand l'appelant n'en impose pas. C'est un
-    /// défaut, pas un plafond : voir <see cref="MaxSupportedBytes"/>.</summary>
-    public const long DefaultMaxBytes = 200L * 1024 * 1024;
+    private readonly IBlobStore _store;
+    private BufferState _state;
+    private readonly int[] _changed;
+    private long _builds;
+    private bool _disposed;
 
-    /// <summary>
-    /// Plafond réel, au-delà duquel un <c>byte[]</c> ne peut pas aller. Rend
-    /// explicite la borne qui était jusqu'ici implicite dans le choix d'offsets
-    /// <see cref="int"/> — utile dès qu'un réglage laisse l'utilisateur monter
-    /// le cap : sans elle, l'UI n'a aucun moyen de savoir où s'arrêter.
-    /// </summary>
-    public static readonly long MaxSupportedBytes = Array.MaxLength;
-
-    private readonly byte[] _original;
-    private readonly byte[] _current;
-
-    private FileBuffer(string fileName, byte[] data, bool truncated)
+    private FileBuffer(string fileName, IBlobStore store, FileBufferOptions options)
     {
         FileName = fileName;
-        _original = data;
-        _current = (byte[])data.Clone();
-        Truncated = truncated;
-        OriginalView = new ByteView(new ArraySource(_original));
-        CurrentView = new ByteView(new ArraySource(_current));
+        _store = store;
+        Options = options;
+        Length = store.Source.Length;
+        _state = new BufferState(0, []);
+        _changed = new int[Length == 0 ? 0 : ((Length - 1) >> options.ChunkShift) + 1];
+        Original = new ByteView(new BlobSource(store.Source));
+        Current = new ByteView(new CurrentSource(this));
+    }
+
+    /// <summary>
+    /// Ouvre un fichier déjà copié par l'application (<see cref="SourceFile.CopyAsync"/>).
+    /// Les segments s'écrivent dans <paramref name="workDirectory"/>, sous
+    /// <c>segments/</c> et <c>tmp/</c>.
+    /// </summary>
+    /// <param name="sourcePath">L'original, qui ne sera jamais modifié.</param>
+    /// <param name="workDirectory">Le dossier de la session.</param>
+    public static FileBuffer Open(string sourcePath, string workDirectory) => Open(sourcePath, workDirectory, null);
+
+    internal static FileBuffer Open(string sourcePath, string workDirectory, FileBufferOptions? options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workDirectory);
+        options ??= new FileBufferOptions();
+        return new FileBuffer(Path.GetFileName(sourcePath), new FileBlobStore(sourcePath, workDirectory, options.Durable), options);
+    }
+
+    /// <summary>Tout en mémoire, original et segments : pour les tests et les petits fichiers construits à la main.</summary>
+    public static FileBuffer FromBytes(string fileName, byte[] data) => FromBytes(fileName, data, null);
+
+    internal static FileBuffer FromBytes(string fileName, byte[] data, FileBufferOptions? options)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        return new FileBuffer(fileName, new MemoryBlobStore(data), options ?? new FileBufferOptions());
     }
 
     public string FileName { get; }
 
-    /// <summary>Le fichier dépassait le cap RAM et a été tronqué au chargement.</summary>
-    public bool Truncated { get; }
-
-    public int Length => _current.Length;
+    public long Length { get; }
 
     /// <summary>Les octets d'origine, lus par fenêtres. Ils ne changent jamais.</summary>
-    public ByteView OriginalView { get; }
+    public ByteView Original { get; }
 
     /// <summary>
-    /// L'état courant, lu par fenêtres. La vue suit les passes : ce qu'une
-    /// passe, une annulation ou un retour à l'original écrit s'y lit aussitôt.
+    /// L'état courant, lu par fenêtres. La vue suit le journal : ce qu'une
+    /// passe, une annulation ou un retour à l'original change s'y lit aussitôt.
     /// </summary>
-    public ByteView CurrentView { get; }
+    public ByteView Current { get; }
 
-    /// <summary>Octets d'origine, jamais modifiés (base de la diff et du reset).</summary>
-    [Obsolete("Lire l'original par OriginalView : à partir de la 0.4.0, il reste sur disque et ce span disparaît (DataGlitchCore#7).")]
-    public ReadOnlySpan<byte> Original => _original;
+    /// <summary>L'ancien nom de <see cref="Original"/>.</summary>
+    [Obsolete("Original est maintenant la vue elle-même.")]
+    public ByteView OriginalView => Original;
 
-    /// <summary>Octets courants, tels que modifiés par les passes de destruction.</summary>
-    [Obsolete("Lire l'état courant par CurrentView : à partir de la 0.4.0, il n'existe plus en entier et ce span disparaît (DataGlitchCore#7).")]
-    public ReadOnlySpan<byte> Current => _current;
+    /// <summary>L'ancien nom de <see cref="Current"/>.</summary>
+    [Obsolete("Current est maintenant la vue elle-même.")]
+    public ByteView CurrentView => Current;
 
-    public static FileBuffer FromBytes(string fileName, byte[] data) => new(fileName, data, truncated: false);
-
-    public static FileBuffer Load(string path, long maxBytes = DefaultMaxBytes)
-    {
-        using var fs = File.OpenRead(path);
-        return Load(Path.GetFileName(path), fs, maxBytes);
-    }
-
-    /// <param name="fileName">Nom du fichier, gardé pour l'affichage et l'export.</param>
-    /// <param name="stream">Flux lu jusqu'au plafond.</param>
-    /// <param name="maxBytes">Plafond en octets : au-delà, le fichier est coupé et
-    /// <see cref="Truncated"/> le signale.</param>
-    /// <param name="expectedLength">Taille attendue quand l'appelant la connaît
-    /// alors que le flux, lui, ne la connaît pas (un flux d'upload navigateur
-    /// n'est pas seekable, mais le fichier annonce sa taille). Sert uniquement
-    /// à allouer juste — voir <see cref="ReadCapped"/>.</param>
-    public static FileBuffer Load(string fileName, Stream stream, long maxBytes = DefaultMaxBytes, long? expectedLength = null)
-    {
-        var (data, truncated) = ReadCapped(stream, maxBytes, expectedLength);
-        return new FileBuffer(fileName, data, truncated);
-    }
-
-    /// <inheritdoc cref="Load(string,Stream,long,long?)"/>
-    public static async Task<FileBuffer> LoadAsync(string fileName, Stream stream, long maxBytes = DefaultMaxBytes, long? expectedLength = null, CancellationToken ct = default)
-    {
-        var (data, truncated) = await ReadCappedAsync(stream, maxBytes, expectedLength, ct).ConfigureAwait(false);
-        return new FileBuffer(fileName, data, truncated);
-    }
-
-    // --- accès bas niveau utilisés par le journal (apply/undo) ---
-
-    internal byte[] Read(int offset, int length)
-    {
-        var slice = new byte[length];
-        Array.Copy(_current, offset, slice, 0, length);
-        return slice;
-    }
-
-    /// <summary>Lit dans l'état COURANT sans muter — utilisé par le moteur pour construire une passe.</summary>
-    internal void ReadInto(int offset, Span<byte> destination) => _current.AsSpan(offset, destination.Length).CopyTo(destination);
-
-    internal void Write(int offset, ReadOnlySpan<byte> bytes) => bytes.CopyTo(_current.AsSpan(offset, bytes.Length));
-
-    /// <summary>Copie tout l'état courant en mémoire.</summary>
-    [Obsolete("Écrire l'état courant en flux (WriteCurrentToAsync, CurrentView.OpenRead) ou le lire par CurrentView : la copie complète disparaît en 0.4.0 (DataGlitchCore#7).")]
-    public byte[] SnapshotCurrent() => (byte[])_current.Clone();
-
-    /// <summary>Taille des écritures de <see cref="WriteCurrentToAsync(Stream, int, int, CancellationToken)"/> :
-    /// autant de points où une annulation peut l'arrêter.</summary>
-    internal const int WriteChunkSize = 1024 * 1024;
+    internal FileBufferOptions Options { get; }
+    internal IBlobStore Store => _store;
+    internal BufferState State => Volatile.Read(ref _state);
 
     /// <summary>
-    /// Écrit l'état courant dans un flux, sans le cloner : un export ne coûte
-    /// plus une seconde fois la taille du fichier en mémoire, comme avec
-    /// <see cref="SnapshotCurrent"/>. Le buffer n'est pas verrouillé : à
-    /// l'appelant d'empêcher toute passe de l'écrire pendant la copie.
+    /// Commence une passe sur l'état courant. La passe s'écrit dans
+    /// <c>tmp/</c> à mesure qu'on la construit ; elle ne change rien tant
+    /// qu'elle n'est pas appliquée par <see cref="OperationJournal.Apply"/>.
+    /// </summary>
+    public PassBuilder BeginPass()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        long build = Interlocked.Increment(ref _builds);
+        return new PassBuilder(this, State, _store.CreateTemp($"{build:D8}.seg"));
+    }
+
+    /// <summary>
+    /// Écrit l'état courant dans un flux, par morceaux d'1 Mio. Le buffer
+    /// n'est pas verrouillé : à l'appelant d'empêcher toute passe pendant la copie.
     /// </summary>
     public Task WriteCurrentToAsync(Stream destination, CancellationToken ct = default) =>
-        WriteCurrentToAsync(destination, 0, _current.Length, ct);
+        WriteCurrentToAsync(destination, 0, Length, ct);
 
-    /// <summary>Écrit une plage de l'état courant dans un flux, sans la cloner.</summary>
-    /// <param name="destination">Flux où écrire.</param>
-    /// <param name="offset">Premier octet de la plage.</param>
-    /// <param name="count">Nombre d'octets à écrire.</param>
-    /// <param name="ct">Annule entre deux morceaux.</param>
-    public async Task WriteCurrentToAsync(Stream destination, int offset, int count, CancellationToken ct = default)
+    /// <summary>Écrit une plage de l'état courant dans un flux.</summary>
+    public async Task WriteCurrentToAsync(Stream destination, long offset, long count, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        if (count > _current.Length - offset)
+        if (count > Length - offset)
             throw new ArgumentOutOfRangeException(nameof(count), "La plage dépasse la fin du buffer.");
 
-        for (int done = 0; done < count;)
+        var chunk = new byte[(int)Math.Min(WriteChunkSize, Math.Max(count, 1))];
+        for (long done = 0; done < count;)
         {
-            int n = Math.Min(WriteChunkSize, count - done);
-            await destination.WriteAsync(_current.AsMemory(offset + done, n), ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            int n = (int)Math.Min(chunk.Length, count - done);
+            Current.Read(offset + done, chunk.AsSpan(0, n));
+            await destination.WriteAsync(chunk.AsMemory(0, n), ct).ConfigureAwait(false);
             done += n;
         }
     }
 
-    public void ResetToOriginal() => Array.Copy(_original, _current, _current.Length);
+    internal const int WriteChunkSize = 1024 * 1024;
 
-    /// <summary>
-    /// Ramène un cap demandé dans le domaine du représentable. L'ancienne
-    /// version retombait sur <see cref="DefaultMaxBytes"/> dès que le cap
-    /// dépassait <see cref="int.MaxValue"/> : inoffensif tant que personne ne
-    /// dépassait le défaut, mais dès qu'un réglage laisse monter le cap, ça
-    /// tronquait un fichier de 2 Go à 200 Mo SANS RIEN DIRE. Un cap trop grand
-    /// est une demande à satisfaire au mieux, pas une erreur à punir.
-    /// </summary>
-    private static long ClampCap(long maxBytes) =>
-        maxBytes <= 0 ? DefaultMaxBytes : Math.Min(maxBytes, MaxSupportedBytes);
-
-    /// <summary>Taille connue d'avance, ou null s'il faut lire pour savoir.</summary>
-    private static long? KnownLength(Stream stream, long? expectedLength)
+    /// <summary>Lâche les fichiers ouverts. Les segments restent sur disque.</summary>
+    public void Dispose()
     {
-        if (expectedLength is long n && n >= 0) return n;
-        if (!stream.CanSeek) return null;
-        long remaining = stream.Length - stream.Position;
-        return remaining >= 0 ? remaining : null;
+        if (_disposed) return;
+        _disposed = true;
+        _store.Close();
     }
 
-    private static (byte[] data, bool truncated) ReadCapped(Stream stream, long maxBytes, long? expectedLength)
+    // ---------- état, pour le journal ----------
+
+    /// <summary>Passe à une nouvelle pile de segments : un nouvel état, que rien de construit avant ne peut plus viser.</summary>
+    internal void SetLayers(Segment[] layers) =>
+        Volatile.Write(ref _state, new BufferState(_state.Number + 1, layers));
+
+    /// <summary>Ajoute (+1) ou retire (-1) les compteurs d'un segment.</summary>
+    internal void AddDiffs(Segment segment, int sign)
     {
-        maxBytes = ClampCap(maxBytes);
-
-        // Chemin dimensionné : quand la taille est connue, une seule allocation
-        // à la bonne taille. Le chemin par MemoryStream ci-dessous fait grossir
-        // son tampon par doublement PUIS le recopie dans ToArray(), soit un pic
-        // à ~3x la taille du fichier, auquel le Clone() du constructeur ajoute
-        // encore une copie. Invisible à 200 Mo, rédhibitoire près du plafond.
-        if (KnownLength(stream, expectedLength) is long known)
-        {
-            int want = (int)Math.Min(known, maxBytes);
-            var exact = new byte[want];
-            int got = stream.ReadAtLeast(exact, want, throwOnEndOfStream: false);
-            // le flux a menti sur sa taille : on garde ce qu'on a vraiment lu
-            if (got < want) Array.Resize(ref exact, got);
-            return (exact, known > maxBytes);
-        }
-
-        using var ms = new MemoryStream();
-        var chunk = new byte[81920];
-        long total = 0;
-        bool truncated = false;
-        int read;
-        while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
-        {
-            if (total + read > maxBytes)
-            {
-                ms.Write(chunk, 0, (int)(maxBytes - total));
-                truncated = true;
-                break;
-            }
-            ms.Write(chunk, 0, read);
-            total += read;
-        }
-        return (ms.ToArray(), truncated);
+        for (int i = 0; i < segment.Diffs.Length; i++)
+            _changed[segment.FirstChunk + i] += sign * segment.Diffs[i];
     }
 
-    private static async Task<(byte[] data, bool truncated)> ReadCappedAsync(Stream stream, long maxBytes, long? expectedLength, CancellationToken ct)
+    internal void ClearDiffs() => Array.Clear(_changed);
+
+    /// <summary>Octets différents de l'original, tranche par tranche.</summary>
+    internal ReadOnlySpan<int> ChangedPerChunk => _changed;
+
+    /// <summary>Octets de <c>[start, start + length)</c> qui diffèrent de l'original : tranches entières par les compteurs, bords comparés.</summary>
+    internal long ChangedBytes(long start, long length)
     {
-        maxBytes = ClampCap(maxBytes);
+        long end = Math.Clamp(start + Math.Max(0, length), 0, Length);
+        start = Math.Clamp(start, 0, Length);
+        if (end <= start) return 0;
 
-        if (KnownLength(stream, expectedLength) is long known)
-        {
-            int want = (int)Math.Min(known, maxBytes);
-            var exact = new byte[want];
-            int got = await stream.ReadAtLeastAsync(exact, want, throwOnEndOfStream: false, ct).ConfigureAwait(false);
-            if (got < want) Array.Resize(ref exact, got);
-            return (exact, known > maxBytes);
-        }
+        int shift = Options.ChunkShift;
+        long chunk = 1L << shift;
+        long firstFull = (start + chunk - 1) >> shift, lastFull = end >> shift; // tranches [firstFull, lastFull) entières
+        if (firstFull >= lastFull) return Compare(start, end);
 
-        using var ms = new MemoryStream();
-        var chunk = new byte[81920];
-        long total = 0;
-        bool truncated = false;
-        int read;
-        while ((read = await stream.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
-        {
-            if (total + read > maxBytes)
-            {
-                await ms.WriteAsync(chunk.AsMemory(0, (int)(maxBytes - total)), ct).ConfigureAwait(false);
-                truncated = true;
-                break;
-            }
-            await ms.WriteAsync(chunk.AsMemory(0, read), ct).ConfigureAwait(false);
-            total += read;
-        }
-        return (ms.ToArray(), truncated);
+        long total = Compare(start, firstFull << shift) + Compare(lastFull << shift, end);
+        for (long c = firstFull; c < lastFull; c++) total += _changed[c];
+        return total;
+    }
+
+    private long Compare(long start, long end)
+    {
+        if (end <= start) return 0;
+        return DiffMap.CountChanged(Original, Current, start, end - start);
+    }
+
+    /// <summary>L'original et une pile de segments, lus ensemble.</summary>
+    internal ByteView ViewOf(Segment[] layers) => new(new LayeredSource(_store.Source, layers));
+
+    private sealed class CurrentSource(FileBuffer buffer) : ByteSource
+    {
+        public override long Length => buffer.Length;
+
+        public override void Read(long offset, Span<byte> destination) =>
+            LayeredSource.ReadLayers(buffer._store.Source, buffer.State.Layers, offset, destination);
+    }
+}
+
+/// <summary>Un état du buffer : son numéro, qui change à chaque passe, annulation ou retour, et sa pile de segments.</summary>
+internal sealed record BufferState(long Number, Segment[] Layers);
+
+/// <summary>
+/// Les réglages internes d'un buffer. Les tests les réduisent pour forcer
+/// tous les chemins (spec §13.1) ; l'application garde les défauts.
+/// </summary>
+internal sealed class FileBufferOptions
+{
+    /// <summary>Taille d'une tranche d'index et de compteurs, en puissance de deux : 1 Mio.</summary>
+    public int ChunkShift { get; init; } = 20;
+
+    /// <summary>Plafond d'une passe en construction avant de se vider sur disque (D10) : 32 Mio.</summary>
+    public int PassBufferBytes { get; init; } = 32 << 20;
+
+    /// <summary>Fenêtre de lecture de l'état d'avant une passe : 1 Mio.</summary>
+    public int ReadWindowBytes { get; init; } = 1 << 20;
+
+    /// <summary>En deçà de cette taille de case, la carte des différences compare les octets ; au-delà, elle lit les compteurs (§6.3).</summary>
+    public long DirectDiffBucketBytes { get; init; } = 4L << 20;
+
+    /// <summary>Forcer les segments sur le disque à leur application (§9.2). Les tests de l'oracle s'en passent, pour aller vite.</summary>
+    public bool Durable { get; init; } = true;
+}
+
+/// <summary>Un fichier du buffer, lu tel quel.</summary>
+internal sealed class BlobSource(IBlob blob) : ByteSource
+{
+    public override long Length => blob.Length;
+
+    public override void Read(long offset, Span<byte> destination) => blob.Read(offset, destination);
+}
+
+/// <summary>
+/// L'original, plus des segments par-dessus, du plus ancien au plus récent
+/// (spec §6.1). Une lecture coûte 1 + K accès disque, K étant le nombre de
+/// segments qui touchent la plage.
+/// </summary>
+internal sealed class LayeredSource(IBlob original, Segment[] layers) : ByteSource
+{
+    public override long Length => original.Length;
+
+    public override void Read(long offset, Span<byte> destination) => ReadLayers(original, layers, offset, destination);
+
+    public static void ReadLayers(IBlob original, Segment[] layers, long offset, Span<byte> destination)
+    {
+        original.Read(offset, destination);
+        foreach (var layer in layers) layer.CopyInto(offset, destination);
     }
 }

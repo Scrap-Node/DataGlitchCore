@@ -3,9 +3,9 @@ namespace DataGlitchCore.Core;
 /// <summary>Plage d'octets demi-ouverte <c>[Start, End)</c> — même convention
 /// que la boucle de <see cref="DestructionEngine"/> et que
 /// <c>RiffChunk.NextStart</c> côté format concret.</summary>
-public readonly record struct ByteRange(int Start, int End)
+public readonly record struct ByteRange(long Start, long End)
 {
-    public int Length => End - Start;
+    public long Length => End - Start;
 }
 
 /// <summary>
@@ -22,7 +22,7 @@ public readonly record struct ByteRange(int Start, int End)
 /// reproduit exactement le comportement historique — <see cref="WholeBuffer"/>
 /// et <see cref="FromPayloadStart"/> sont d'ailleurs le même mécanisme : un
 /// plancher n'est jamais qu'une région unique, non bornée à droite
-/// (<see cref="int.MaxValue"/>, ramenée à la taille réelle du buffer par
+/// (<see cref="long.MaxValue"/>, ramenée à la taille réelle du buffer par
 /// <see cref="ClampedTo"/> au moment de l'utiliser).
 /// </summary>
 public sealed class DestructionMask
@@ -39,8 +39,8 @@ public sealed class DestructionMask
 
     /// <summary>Un seul plancher : rien avant <paramref name="payloadStart"/>
     /// n'est destructible, tout le reste l'est.</summary>
-    public static DestructionMask FromPayloadStart(int payloadStart) =>
-        new([new ByteRange(Math.Max(0, payloadStart), int.MaxValue)]);
+    public static DestructionMask FromPayloadStart(long payloadStart) =>
+        new([new ByteRange(Math.Max(0, payloadStart), long.MaxValue)]);
 
     /// <summary>
     /// Régions explicites, potentiellement entrelacées avec du protégé — le
@@ -72,13 +72,13 @@ public sealed class DestructionMask
     /// c'est ce qui résout le plancher non borné de <see cref="WholeBuffer"/>
     /// et <see cref="FromPayloadStart"/> en une plage réelle. Les régions
     /// entièrement hors bornes disparaissent.</summary>
-    public IReadOnlyList<ByteRange> ClampedTo(int bufferLength)
+    public IReadOnlyList<ByteRange> ClampedTo(long bufferLength)
     {
         var result = new List<ByteRange>(Regions.Count);
         foreach (var r in Regions)
         {
-            int start = Math.Clamp(r.Start, 0, bufferLength);
-            int end = Math.Clamp(r.End, 0, bufferLength);
+            long start = Math.Clamp(r.Start, 0, bufferLength);
+            long end = Math.Clamp(r.End, 0, bufferLength);
             if (end > start) result.Add(new ByteRange(start, end));
         }
         return result;
@@ -89,11 +89,11 @@ public sealed class DestructionMask
     /// partir de régions finies explicites (<see cref="FromRegions"/>) ;
     /// pour <see cref="WholeBuffer"/>/<see cref="FromPayloadStart"/> (non
     /// bornés), appeler <see cref="ClampedTo"/> d'abord et sommer soi-même.</summary>
-    public int TotalBytes
+    public long TotalBytes
     {
         get
         {
-            int total = 0;
+            long total = 0;
             foreach (var r in Regions) total += r.Length;
             return total;
         }
