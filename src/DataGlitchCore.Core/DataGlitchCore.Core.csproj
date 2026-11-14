@@ -10,10 +10,10 @@
        Le tag vX.Y.Z publie cette version (.github/workflows/release.yml). -->
   <PropertyGroup>
     <PackageId>DataGlitchCore</PackageId>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Authors>Côme Chaslerie</Authors>
     <Copyright>Copyright 2026 Côme Chaslerie</Copyright>
-    <Description>Moteur de destruction de fichiers partagé par DataBender et DataMosher : fichier en mémoire sous un plafond réglable avec l'original intact et lu par fenêtres, passes de destruction reproductibles, masques de protection, journal pour annuler et rétablir, montage d'une suite d'unités (supprimer, répéter, coller), carte des octets modifiés, parcours des blocs RIFF, écriture des exports en tout ou rien, forcée sur le disque. Aucun format ni aucune interface : chaque application branche les siens.</Description>
+    <Description>Moteur de destruction de fichiers partagé par DataBender et DataMosher : fichier lu sur disque, jamais tenu en entier en mémoire, l'original intact et chaque passe dans un segment, passes de destruction reproductibles, masques de protection, journal pour annuler et rétablir sans réécrire d'octet, octets modifiés comptés tranche par tranche, montage d'une suite d'unités (supprimer, répéter, coller), parcours des blocs RIFF, écriture des exports en tout ou rien, forcée sur le disque. Aucun format ni aucune interface : chaque application branche les siens.</Description>
     <PackageTags>glitch;databending;datamoshing;riff;wav;avi</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
