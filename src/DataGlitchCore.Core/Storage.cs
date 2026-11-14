@@ -36,6 +36,13 @@ internal interface IBlobStore
     /// <summary>Un fichier neuf dans <c>tmp/</c>.</summary>
     IBlob CreateTemp(string name);
 
+    /// <summary>
+    /// Une copie d'un fichier dans <c>tmp/</c>, à modifier ensuite : la base
+    /// dense d'une fusion (§7). Clonée sous macOS, ce qui est instantané sur
+    /// APFS ; copiée ailleurs.
+    /// </summary>
+    IBlob CreateTempCopy(IBlob source, string name);
+
     /// <summary>Force le fichier sur le disque, puis le renomme dans <c>segments/</c>, puis force le dossier.</summary>
     IBlob Publish(IBlob blob, string name);
 
@@ -68,6 +75,15 @@ internal sealed class MemoryBlobStore(byte[] source) : IBlobStore
     public IBlob CreateTemp(string name)
     {
         var blob = new MemoryBlob("tmp/" + name, [], readOnly: false) { Store = this };
+        lock (_files) _files[blob.Name] = blob;
+        return blob;
+    }
+
+    public IBlob CreateTempCopy(IBlob source, string name)
+    {
+        var bytes = new byte[source.Length];
+        source.Read(0, bytes);
+        var blob = new MemoryBlob("tmp/" + name, bytes, readOnly: false) { Store = this };
         lock (_files) _files[blob.Name] = blob;
         return blob;
     }
@@ -161,6 +177,30 @@ internal sealed class FileBlobStore : IBlobStore
         return blob;
     }
 
+    public IBlob CreateTempCopy(IBlob source, string name)
+    {
+        string path = Path.Combine(_directory, "tmp", name);
+        File.Delete(path);
+        CloneOrCopy(((FileBlob)source).Path, path);
+        var blob = new FileBlob("tmp/" + name, path, source.Length, writable: true);
+        blob.OpenWriter();
+        lock (_open) _open.Add(blob);
+        return blob;
+    }
+
+    /// <summary>Un clone (APFS : aucune donnée copiée tant qu'on n'y écrit pas), sinon une copie.</summary>
+    private static void CloneOrCopy(string source, string destination)
+    {
+        if (OperatingSystem.IsMacOS() && clonefile(source, destination, 0) == 0) return;
+        File.Copy(source, destination, overwrite: true);
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    private static extern int clonefile(
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string source,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string destination,
+        int flags);
+
     public IBlob Publish(IBlob blob, string name)
     {
         var file = (FileBlob)blob;
@@ -219,6 +259,9 @@ internal sealed class FileBlobStore : IBlobStore
         public string Name { get; } = name;
         public string Path { get; } = path;
         public long Length => Volatile.Read(ref _length);
+
+        public void OpenWriter() =>
+            _writer = File.OpenHandle(Path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete);
 
         public void CreateEmpty() =>
             // un temporaire du même nom, laissé par une session interrompue, est écrasé

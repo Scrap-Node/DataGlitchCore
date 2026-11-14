@@ -49,7 +49,7 @@ public sealed class PassBuilder : IDisposable
     internal SegmentWriter Writer => _writer;
 
     /// <summary>L'état sur lequel la passe se construit.</summary>
-    public ByteView Before => _buffer.ViewOf(BaseState.Layers);
+    public ByteView Before => _buffer.ViewOf(BaseState);
 
     /// <summary>
     /// Écrit la différence entre <paramref name="before"/> et <paramref name="after"/>,
@@ -220,10 +220,10 @@ public sealed class DestructionBatch : IDisposable
     public long LastOffset { get; }
 
     /// <summary>L'état sur lequel la passe a été construite.</summary>
-    public ByteView Before => _buffer.ViewOf(BaseState.Layers);
+    public ByteView Before => _buffer.ViewOf(BaseState);
 
     /// <summary>Cet état, la passe appliquée.</summary>
-    public ByteView After => _buffer.ViewOf([.. BaseState.Layers, Segment]);
+    public ByteView After => _buffer.ViewOf(BaseState.Bottom, [.. BaseState.Layers, Segment]);
 
     /// <summary>
     /// Les plages que la passe écrit, triées. Deux écritures d'une même fenêtre

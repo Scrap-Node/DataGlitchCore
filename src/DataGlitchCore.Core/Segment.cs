@@ -321,7 +321,20 @@ internal sealed class Segment
     /// écrit sur <c>[offset, offset + destination.Length)</c>, par-dessus ce
     /// qui s'y trouve. Rien n'est lu si aucune plage ne touche la plage.
     /// </summary>
-    public void CopyInto(long offset, Span<byte> destination)
+    public void CopyInto(long offset, Span<byte> destination) => CopyCore(offset, destination, Span<bool>.Empty);
+
+    /// <summary>
+    /// Comme <see cref="CopyInto"/>, en marquant en plus, dans
+    /// <paramref name="covered"/>, les octets que le segment écrit : la fusion
+    /// en a besoin pour savoir où la base recouvre l'original (§7).
+    /// </summary>
+    public void Overlay(long offset, Span<byte> destination, Span<bool> covered)
+    {
+        if (covered.Length != destination.Length) throw new ArgumentException("Une marque par octet.", nameof(covered));
+        CopyCore(offset, destination, covered);
+    }
+
+    private void CopyCore(long offset, Span<byte> destination, Span<bool> covered)
     {
         long a = offset, b = offset + destination.Length;
         if (destination.IsEmpty || RunCount == 0 || b <= FirstOffset || a >= LastOffset) return;
@@ -370,6 +383,7 @@ internal sealed class Segment
                         var target = destination.Slice((int)(from - a), (int)(to - from));
                         if (data + at + target.Length <= size) block.AsSpan(data + at, target.Length).CopyTo(target);
                         else Blob.Read(position + data + at, target);
+                        if (!covered.IsEmpty) covered.Slice((int)(from - a), target.Length).Fill(true);
                     }
                     p = data + runLength;
                 }
@@ -383,6 +397,12 @@ internal sealed class Segment
     }
 
     private const int ZoneBlockBytes = 64 * 1024;
+
+    /// <summary>Une plage du segment touche-t-elle la tranche <paramref name="chunk"/> ? Répondu par l'index, sans accès disque.</summary>
+    public bool Touches(long chunk) => chunk >= FirstChunk && chunk <= LastChunk && _index[chunk - FirstChunk] >= 0;
+
+    /// <summary>Le delta de la tranche <paramref name="chunk"/>, 0 hors du segment.</summary>
+    public int DiffAt(long chunk) => chunk >= FirstChunk && chunk <= LastChunk ? Diffs[chunk - FirstChunk] : 0;
 
     /// <summary>Les plages du segment, dans l'ordre, sans leurs octets.</summary>
     public IEnumerable<ByteRange> Runs()

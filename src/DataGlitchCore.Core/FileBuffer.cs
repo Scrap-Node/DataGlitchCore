@@ -27,7 +27,7 @@ public sealed class FileBuffer : IDisposable
         _store = store;
         Options = options;
         Length = store.Source.Length;
-        _state = new BufferState(0, []);
+        _state = new BufferState(0, store.Source, []);
         _changed = new int[Length == 0 ? 0 : ((Length - 1) >> options.ChunkShift) + 1];
         Original = new ByteView(new BlobSource(store.Source));
         Current = new ByteView(new CurrentSource(this));
@@ -84,6 +84,9 @@ public sealed class FileBuffer : IDisposable
     internal IBlobStore Store => _store;
     internal BufferState State => Volatile.Read(ref _state);
 
+    /// <summary>Le journal qui tient l'historique du buffer : le moteur lui demande la place d'une passe avant de la construire (§6.2).</summary>
+    internal OperationJournal? Journal { get; set; }
+
     /// <summary>
     /// Commence une passe sur l'état courant. La passe s'écrit dans
     /// <c>tmp/</c> à mesure qu'on la construit ; elle ne change rien tant
@@ -135,9 +138,12 @@ public sealed class FileBuffer : IDisposable
 
     // ---------- état, pour le journal ----------
 
-    /// <summary>Passe à une nouvelle pile de segments : un nouvel état, que rien de construit avant ne peut plus viser.</summary>
-    internal void SetLayers(Segment[] layers) =>
-        Volatile.Write(ref _state, new BufferState(_state.Number + 1, layers));
+    /// <summary>
+    /// Passe à un nouvel état : un fond (l'original, ou la base dense d'une
+    /// fusion) et une pile de segments. Rien de construit avant ne peut plus le viser.
+    /// </summary>
+    internal void SetState(IBlob bottom, Segment[] layers) =>
+        Volatile.Write(ref _state, new BufferState(_state.Number + 1, bottom, layers));
 
     /// <summary>Ajoute (+1) ou retire (-1) les compteurs d'un segment.</summary>
     internal void AddDiffs(Segment segment, int sign)
@@ -174,20 +180,41 @@ public sealed class FileBuffer : IDisposable
         return DiffMap.CountChanged(Original, Current, start, end - start);
     }
 
-    /// <summary>L'original et une pile de segments, lus ensemble.</summary>
-    internal ByteView ViewOf(Segment[] layers) => new(new LayeredSource(_store.Source, layers));
+    /// <summary>Un fond et une pile de segments, lus ensemble.</summary>
+    internal ByteView ViewOf(IBlob bottom, Segment[] layers) => new(new LayeredSource(bottom, layers));
+
+    internal ByteView ViewOf(BufferState state) => ViewOf(state.Bottom, state.Layers);
 
     private sealed class CurrentSource(FileBuffer buffer) : ByteSource
     {
         public override long Length => buffer.Length;
 
-        public override void Read(long offset, Span<byte> destination) =>
-            LayeredSource.ReadLayers(buffer._store.Source, buffer.State.Layers, offset, destination);
+        public override void Read(long offset, Span<byte> destination)
+        {
+            while (true)
+            {
+                var state = buffer.State;
+                try
+                {
+                    LayeredSource.ReadLayers(state.Bottom, state.Layers, offset, destination);
+                    return;
+                }
+                catch (IOException) when (buffer.State.Number != state.Number)
+                {
+                    // une fusion ou un retour à l'original a supprimé un fichier
+                    // de l'état lu : on relit l'état qui l'a remplacé
+                }
+            }
+        }
     }
 }
 
-/// <summary>Un état du buffer : son numéro, qui change à chaque passe, annulation ou retour, et sa pile de segments.</summary>
-internal sealed record BufferState(long Number, Segment[] Layers);
+/// <summary>
+/// Un état du buffer : son numéro, qui change à chaque passe, annulation,
+/// fusion ou retour ; son fond, l'original ou la base dense (§5.2) ; et sa
+/// pile de segments, la base éparse d'abord s'il y en a une.
+/// </summary>
+internal sealed record BufferState(long Number, IBlob Bottom, Segment[] Layers);
 
 /// <summary>
 /// Les réglages internes d'un buffer. Les tests les réduisent pour forcer
@@ -220,19 +247,19 @@ internal sealed class BlobSource(IBlob blob) : ByteSource
 }
 
 /// <summary>
-/// L'original, plus des segments par-dessus, du plus ancien au plus récent
-/// (spec §6.1). Une lecture coûte 1 + K accès disque, K étant le nombre de
-/// segments qui touchent la plage.
+/// Le fond, l'original ou la base dense, plus des segments par-dessus, du
+/// plus ancien au plus récent (spec §6.1). Une lecture coûte 1 + K accès
+/// disque, K étant le nombre de segments qui touchent la plage.
 /// </summary>
-internal sealed class LayeredSource(IBlob original, Segment[] layers) : ByteSource
+internal sealed class LayeredSource(IBlob bottom, Segment[] layers) : ByteSource
 {
-    public override long Length => original.Length;
+    public override long Length => bottom.Length;
 
-    public override void Read(long offset, Span<byte> destination) => ReadLayers(original, layers, offset, destination);
+    public override void Read(long offset, Span<byte> destination) => ReadLayers(bottom, layers, offset, destination);
 
-    public static void ReadLayers(IBlob original, Segment[] layers, long offset, Span<byte> destination)
+    public static void ReadLayers(IBlob bottom, Segment[] layers, long offset, Span<byte> destination)
     {
-        original.Read(offset, destination);
+        bottom.Read(offset, destination);
         foreach (var layer in layers) layer.CopyInto(offset, destination);
     }
 }

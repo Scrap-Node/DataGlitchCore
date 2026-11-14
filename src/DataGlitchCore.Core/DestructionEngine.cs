@@ -48,16 +48,14 @@ public static class DestructionEngine
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(mask);
 
-        using var builder = buffer.BeginPass();
         long length = buffer.Length;
         int blockSize = Math.Max(MinBlockSize(options.Operator), options.BlockSize);
+        var windows = Windows(buffer, options, mask);
 
-        // zone ciblée, en octets — le masque, pas ce plancher, protège
-        long start = (long)Math.Clamp(options.RegionStart * length, 0, length);
-        long end = (long)Math.Clamp(options.RegionEnd * length, 0, length);
-        if (end < start) (start, end) = (end, start);
+        // la place d'abord (§6.2) : une passe au-delà du budget est refusée avant d'écrire quoi que ce soit
+        buffer.Journal?.EnsureRoom(Estimate(windows, options, buffer.Options.ChunkShift));
 
-        var windows = IntersectWindows(start, end, mask, length);
+        using var builder = buffer.BeginPass();
         if (windows.Count == 0) return builder.Build(DescribeLabel(options));
 
         // Espace-payload : les fenêtres mises bout à bout comme un buffer
@@ -69,7 +67,7 @@ public static class DestructionEngine
 
         var rng = options.Seed is int s ? new Random(s) : new Random();
         int maxShift = Math.Max(1, options.MaxShiftBlocks);
-        using var reader = new PassReader(buffer, builder.BaseState.Layers, Math.Max(buffer.Options.ReadWindowBytes, blockSize));
+        using var reader = new PassReader(buffer, builder.BaseState, Math.Max(buffer.Options.ReadWindowBytes, blockSize));
         var writer = builder.Writer;
         int shift = buffer.Options.ChunkShift;
 
@@ -142,6 +140,44 @@ public static class DestructionEngine
             writer.AddDelta(chunk, (int)delta);
             done += n;
         }
+    }
+
+    /// <summary>
+    /// Estime prudemment la taille du segment d'une passe, avant de la
+    /// construire (spec §6.2) : densité × (1 + 12 / bloc) × octets de la zone,
+    /// plafonné à deux fois la zone, plus l'en-tête, l'index et le pied. Une
+    /// passe confinée à une bande écrit deux segments : l'app compte le double.
+    /// </summary>
+    public static long EstimateSegmentBytes(FileBuffer buffer, DestructionOptions options, DestructionMask mask)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(mask);
+        return Estimate(Windows(buffer, options, mask), options, buffer.Options.ChunkShift);
+    }
+
+    private static long Estimate(List<ByteRange> windows, DestructionOptions options, int shift)
+    {
+        long fixedBytes = SegmentFormat.HeaderSize + 16 + SegmentFormat.FooterSize;
+        if (windows.Count == 0) return fixedBytes;
+
+        long zone = windows.Sum(w => w.Length);
+        int block = Math.Max(MinBlockSize(options.Operator), options.BlockSize);
+        double density = Math.Clamp(options.Density, 0, 1);
+        double data = Math.Min(density * (1 + (double)SegmentFormat.RunHeaderSize / block) * zone, 2.0 * zone);
+        long chunks = ((windows[^1].End - 1) >> shift) - (windows[0].Start >> shift) + 1;
+        return fixedBytes + 12 * chunks + (long)Math.Ceiling(data);
+    }
+
+    /// <summary>La zone ciblée, intersectée avec les régions du masque : des fenêtres disjointes, triées.</summary>
+    private static List<ByteRange> Windows(FileBuffer buffer, DestructionOptions options, DestructionMask mask)
+    {
+        // zone ciblée, en octets — le masque, pas ce plancher, protège
+        long length = buffer.Length;
+        long start = (long)Math.Clamp(options.RegionStart * length, 0, length);
+        long end = (long)Math.Clamp(options.RegionEnd * length, 0, length);
+        if (end < start) (start, end) = (end, start);
+        return IntersectWindows(start, end, mask, length);
     }
 
     private static List<ByteRange> IntersectWindows(long start, long end, DestructionMask mask, long length)
@@ -281,12 +317,15 @@ public static class DestructionEngine
 
     /// <summary>
     /// L'état d'avant la passe, lu par fenêtres qui avancent avec les blocs :
-    /// la fenêtre courante et la précédente, et l'original aux mêmes offsets,
-    /// lu une seule fois pour les deux usages.
+    /// la fenêtre courante et la précédente, et l'original aux mêmes offsets.
+    /// Sans base dense, l'original est aussi le fond de l'état : il n'est lu
+    /// qu'une fois pour les deux usages.
     /// </summary>
-    private sealed class PassReader(FileBuffer buffer, Segment[] layers, int size) : IDisposable
+    private sealed class PassReader(FileBuffer buffer, BufferState state, int size) : IDisposable
     {
         private readonly IBlob _original = buffer.Store.Source;
+        private readonly IBlob _bottom = state.Bottom;
+        private readonly Segment[] _layers = state.Layers;
         private readonly long _length = buffer.Length;
         private Window _current = new(size);
         private Window _previous = new(size);
@@ -297,7 +336,7 @@ public static class DestructionEngine
             if (!_current.Contains(offset, before.Length))
             {
                 (_previous, _current) = (_current, _previous);
-                _current.Load(_original, layers, offset, (int)Math.Min(size, _length - offset));
+                _current.Load(_original, _bottom, _layers, offset, (int)Math.Min(size, _length - offset));
             }
             _current.Copy(offset, before, original);
         }
@@ -307,7 +346,7 @@ public static class DestructionEngine
         {
             if (_current.Contains(offset, destination.Length)) _current.Copy(offset, destination, default);
             else if (_previous.Contains(offset, destination.Length)) _previous.Copy(offset, destination, default);
-            else LayeredSource.ReadLayers(_original, layers, offset, destination);
+            else LayeredSource.ReadLayers(_bottom, _layers, offset, destination);
         }
 
         public void Dispose()
@@ -324,12 +363,13 @@ public static class DestructionEngine
             public bool Contains(long offset, int length) =>
                 _start >= 0 && offset >= _start && offset + length <= _start + _count;
 
-            public void Load(IBlob original, Segment[] layers, long offset, int count)
+            public void Load(IBlob original, IBlob bottom, Segment[] layers, long offset, int count)
             {
                 var orig = _original.AsSpan(0, count);
                 var before = _before.AsSpan(0, count);
                 original.Read(offset, orig);
-                orig.CopyTo(before);
+                if (ReferenceEquals(bottom, original)) orig.CopyTo(before);
+                else bottom.Read(offset, before);
                 foreach (var layer in layers) layer.CopyInto(offset, before);
                 _start = offset;
                 _count = count;
