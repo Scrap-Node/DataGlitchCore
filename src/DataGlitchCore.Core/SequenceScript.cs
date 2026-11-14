@@ -72,8 +72,8 @@ public sealed record ClearInsertions(int After) : SequenceOperation(After);
 /// Le montage d'une suite d'unités : la liste ordonnée des opérations
 /// appliquées. Il ne touche jamais aux octets ; c'est le format qui reconstruit
 /// la sortie à partir du plan (<see cref="EffectivePlan"/>). Supprimer, répéter
-/// ou coller change la longueur du fichier, ce qu'une <see cref="ByteEdit"/>
-/// à longueur constante ne sait pas exprimer : les deux couches restent
+/// ou coller change la longueur du fichier, ce qu'une passe de destruction,
+/// à longueur constante, ne sait pas exprimer : les deux couches restent
 /// séparées, mais suivent le même principe d'historique que
 /// <see cref="OperationJournal"/>.
 /// </summary>

@@ -8,7 +8,13 @@ namespace DataGlitchCore.Core.Tests;
 /// aléatoires de passes, d'annulations, de rétablissements et de retours à
 /// l'original tournent à la fois sur le cœur et sur sa copie de 24c3d18
 /// (<c>Reference*</c>). À chaque pas, l'état courant doit être identique octet
-/// pour octet, et l'historique concorder.
+/// pour octet, l'historique concorder, et <see cref="OperationJournal.ChangedBytes"/>
+/// égaler une comparaison naïve.
+///
+/// Le cœur y tourne en mémoire ou sur de vrais fichiers, avec des tranches,
+/// des fenêtres et un plafond de passe réduits à quelques Kio, pour forcer
+/// tous les chemins : lectures à cheval sur les tranches, passes vidées sur
+/// disque en cours de construction.
 ///
 /// Une suite qui échoue donne sa seed. Pour la rejouer seule :
 /// <c>DGC_ORACLE_SEED=1234 dotnet test --filter Oracle</c>. Pour en lancer plus :
@@ -40,7 +46,7 @@ public sealed class OracleTests
 
     [Theory]
     [MemberData(nameof(Seeds))]
-    public void ToRuns_Gives_The_Same_Runs_As_The_Reference(int seed)
+    public void WriteDiff_Gives_The_Same_Runs_As_ToRuns_Slice_By_Slice(int seed)
     {
         var rng = new Random(seed);
         int n = rng.Next(0, 3000);
@@ -53,14 +59,31 @@ public sealed class OracleTests
             int len = Math.Min(n - i, rng.Next(1, 40));
             for (int k = 0; k < len; k++) after[i + k] = (byte)rng.Next(256);
         }
-        // pas d'écart négatif : ToRuns y boucle sans fin, dans la référence comme dans le cœur
         int gap = rng.Next(0, 130);
-        int baseOffset = rng.Next(0, 1 << 20);
+        int baseOffset = rng.Next(0, 5000);
 
         var expected = ReferenceDestructionEngine.ToRuns(baseOffset, before, after, gap);
-        var actual = DestructionEngine.ToRuns(baseOffset, before, after, gap);
 
-        OracleScenario.AssertSameEdits(seed, expected, actual);
+        var file = new byte[baseOffset + n + rng.Next(0, 100)];
+        before.CopyTo(file, baseOffset);
+        using var buffer = FileBuffer.FromBytes("x", file);
+        using var builder = buffer.BeginPass();
+        // tranche par tranche, de tailles quelconques, vides comprises
+        for (int at = 0; at < n;)
+        {
+            int slice = Math.Min(n - at, rng.Next(0, 300));
+            builder.WriteDiff(baseOffset + at, before.AsSpan(at, slice), after.AsSpan(at, slice), gap);
+            at += slice;
+        }
+        using var batch = builder.Build("diff");
+
+        Assert.Equal(expected.Select(r => (long)r.Offset), batch.Runs().Select(r => r.Start));
+        Assert.Equal(expected.Select(r => (long)r.Length), batch.Runs().Select(r => r.Length));
+        Assert.Equal(expected.Count, batch.EditCount);
+        Assert.Equal(expected.Sum(r => (long)r.Length), batch.BytesChanged);
+        var result = (byte[])file.Clone();
+        foreach (var r in expected) r.NewBytes.CopyTo(result, r.Offset);
+        Assert.Equal(result, batch.After.ReadAll());
     }
 }
 
@@ -74,13 +97,46 @@ internal sealed class OracleScenario(int seed)
     private OperationJournal _journal = null!;
     private ReferenceFileBuffer _ref = null!;
     private ReferenceOperationJournal _refJournal = null!;
+    private string? _directory;
 
     public void Run()
     {
         var data = OracleData.Make(_rng, out string shape);
-        _log.Add($"fichier de {data.Length} o, {shape}");
+        var options = new FileBufferOptions
+        {
+            ChunkShift = new[] { 12, 13, 20 }[_rng.Next(3)],
+            PassBufferBytes = new[] { 100, 4096, 65536, 32 << 20 }[_rng.Next(4)],
+            ReadWindowBytes = new[] { 4096, 1 << 20 }[_rng.Next(2)],
+            Durable = false,
+        };
+        bool files = _rng.Next(4) == 0;
+        _log.Add($"fichier de {data.Length} o, {shape}, {(files ? "sur disque" : "en mémoire")}, tranche 2^{options.ChunkShift}, " +
+                 $"plafond {options.PassBufferBytes} o, fenêtre {options.ReadWindowBytes} o");
 
-        _buffer = FileBuffer.FromBytes("oracle.bin", (byte[])data.Clone());
+        if (files)
+        {
+            _directory = Directory.CreateTempSubdirectory("dgc-oracle-").FullName;
+            string source = Path.Combine(_directory, "source.bin");
+            File.WriteAllBytes(source, data);
+            _buffer = FileBuffer.Open(source, _directory, options);
+        }
+        else
+        {
+            _buffer = FileBuffer.FromBytes("oracle.bin", (byte[])data.Clone(), options);
+        }
+        try
+        {
+            RunSteps(data);
+        }
+        finally
+        {
+            _buffer.Dispose();
+            if (_directory is not null) Directory.Delete(_directory, recursive: true);
+        }
+    }
+
+    private void RunSteps(byte[] data)
+    {
         _journal = new OperationJournal(_buffer);
         _ref = ReferenceFileBuffer.FromBytes("oracle.bin", (byte[])data.Clone());
         _refJournal = new ReferenceOperationJournal(_ref);
@@ -115,8 +171,13 @@ internal sealed class OracleScenario(int seed)
         AssertSameBatch(reference, prod);
 
         // une passe vide s'empile aussi : le journal ne la refuse pas
-        if (reference.EditCount == 0 && _rng.Next(3) != 0) return;
-        _journal.Apply(prod);
+        if (reference.EditCount == 0 && _rng.Next(3) != 0)
+        {
+            prod.Dispose();
+            return;
+        }
+        var info = _journal.Apply(prod);
+        Assert.Equal(prod.Id, info.Id);
         _refJournal.Apply(reference);
     }
 
@@ -127,7 +188,8 @@ internal sealed class OracleScenario(int seed)
     private void PostProcessedPass(bool large)
     {
         var options = RandomOptions(large);
-        var (_, reference, mask) = Build(options);
+        var (rawBatch, reference, mask) = Build(options);
+        rawBatch.Dispose();
         if (reference.EditCount == 0) return;
 
         int length = _ref.Length;
@@ -154,19 +216,34 @@ internal sealed class OracleScenario(int seed)
 
         int gap = _rng.Next(0, 130);
         var refRuns = ReferenceDestructionEngine.ToRuns(lo, before, after, gap);
-        var prodRuns = DestructionEngine.ToRuns(lo, before, after, gap);
-        AssertSameEdits(seed, refRuns, prodRuns);
-
         string label = reference.Label + " · bande";
         _log.Add($"passe reprise {Describe(options)}, masque {mask}, [{lo}, {hi}), écart {gap} : {refRuns.Count} plages");
-        _journal.Apply(new DestructionBatch(label, prodRuns));
-        _refJournal.Apply(new ReferenceDestructionBatch(label, refRuns));
+
+        // comme ConfineToBand au lot 2 : l'avant et l'après, tranche par tranche
+        using var builder = _buffer.BeginPass();
+        for (int at = 0; at < before.Length;)
+        {
+            int slice = Math.Min(before.Length - at, _rng.Next(1, 5000));
+            builder.WriteDiff(lo + at, before.AsSpan(at, slice), after.AsSpan(at, slice), gap);
+            at += slice;
+        }
+        var batch = builder.Build(label);
+        var expected = new ReferenceDestructionBatch(label, refRuns);
+        Assert.Equal(expected.EditCount, batch.EditCount);
+        Assert.Equal(expected.BytesChanged, batch.BytesChanged);
+        Assert.Equal(expected.FirstOffset, batch.FirstOffset);
+        Assert.Equal(expected.LastOffset, batch.LastOffset);
+        Assert.Equal(refRuns.Select(r => new ByteRange(r.Offset, r.Offset + r.Length)), batch.Runs());
+
+        _journal.Apply(batch);
+        _refJournal.Apply(expected);
     }
 
     private void Undo()
     {
         var expected = _refJournal.Undo();
         var actual = _journal.Undo();
+        Assert.Equal(expected is null, actual is null);
         _log.Add($"annuler : {expected?.Label ?? "rien"}");
         Assert.Equal(expected?.Label, actual?.Label);
     }
@@ -175,6 +252,7 @@ internal sealed class OracleScenario(int seed)
     {
         var expected = _refJournal.Redo();
         var actual = _journal.Redo();
+        Assert.Equal(expected is null, actual is null);
         _log.Add($"rétablir : {expected?.Label ?? "rien"}");
         Assert.Equal(expected?.Label, actual?.Label);
     }
@@ -209,16 +287,36 @@ internal sealed class OracleScenario(int seed)
             Assert.Equal(expected.LastOffset, actual.LastOffset);
             // numérotées à l'application, dans l'ordre de l'historique
             Assert.True(actual.Id > lastId, $"passe {i} numérotée {actual.Id} après {lastId}");
+            Assert.Null(actual.AppData);
             lastId = actual.Id;
         }
 
         CheckViews();
+        CheckChangedBytes();
+        if (_directory is not null)
+            Assert.Empty(Directory.GetFiles(Path.Combine(_directory, "tmp"))); // pas de passe abandonnée qui traîne
+    }
+
+    /// <summary>Les compteurs du journal contre une comparaison naïve, sur des plages quelconques.</summary>
+    private void CheckChangedBytes()
+    {
+        var original = _ref.Original;
+        var current = _ref.Current;
+        for (int k = 0; k < 3; k++)
+        {
+            int start = _rng.Next(-5, _ref.Length + 5);
+            int length = _rng.Next(4) == 0 ? _ref.Length : _rng.Next(-1, _ref.Length + 5);
+            int lo = Math.Clamp(start, 0, _ref.Length), hi = Math.Clamp(start + Math.Max(0, length), 0, _ref.Length);
+            long naive = 0;
+            for (int i = lo; i < hi; i++) if (original[i] != current[i]) naive++;
+            Assert.Equal(naive, _journal.ChangedBytes(start, length));
+        }
     }
 
     /// <summary>Ce que les vues rendent d'autre qu'une lecture complète : une plage, un flux, la carte des différences.</summary>
     private void CheckViews()
     {
-        var view = _buffer.CurrentView;
+        var view = _buffer.Current;
         int length = _ref.Length;
 
         int offset = _rng.Next(0, length + 1);
@@ -240,8 +338,8 @@ internal sealed class OracleScenario(int seed)
         int start = _rng.Next(-5, length + 5);
         int count = _rng.Next(4) == 0 ? -1 : _rng.Next(-1, length + 5);
         var expected = ReferenceDiffMap.Compute(_ref.Original, _ref.Current, buckets, start, count);
-        var actual = DiffMap.Compute(_buffer.OriginalView, view, buckets, start, count);
-        Assert.Equal(expected, actual);
+        Assert.Equal(expected, DiffMap.Compute(_buffer.Original, view, buckets, start, count));
+        Assert.Equal(expected, DiffMap.Compute(_buffer, buckets, start, count));
     }
 
     private static void AssertBytes(string what, ReadOnlySpan<byte> expected, ReadOnlySpan<byte> actual)
@@ -252,31 +350,33 @@ internal sealed class OracleScenario(int seed)
             throw new XunitException($"{what} : octet {at} différent (attendu {expected[at]}, obtenu {actual[at]}).");
     }
 
-    private static void AssertSameBatch(ReferenceDestructionBatch expected, DestructionBatch actual)
+    /// <summary>
+    /// La passe du cœur contre celle de la référence : mêmes comptes, même
+    /// avant, et un après qui est l'avant plus les écritures de la référence.
+    /// Ses plages couvrent toutes ces écritures, triées et disjointes.
+    /// </summary>
+    private void AssertSameBatch(ReferenceDestructionBatch expected, DestructionBatch actual)
     {
         Assert.Equal(expected.Label, actual.Label);
         Assert.Equal(expected.EditCount, actual.EditCount);
         Assert.Equal(expected.BytesChanged, actual.BytesChanged);
         Assert.Equal(expected.FirstOffset, actual.FirstOffset);
         Assert.Equal(expected.LastOffset, actual.LastOffset);
-        for (int i = 0; i < expected.EditCount; i++)
-        {
-            var e = expected.Edits[i];
-            var a = actual.Edits[i];
-            if (e.Offset != a.Offset || !e.OldBytes.AsSpan().SequenceEqual(a.OldBytes) || !e.NewBytes.AsSpan().SequenceEqual(a.NewBytes))
-                throw new XunitException($"écriture {i} différente : attendue à {e.Offset} ({e.Length} o), obtenue à {a.Offset} ({a.Length} o).");
-        }
-    }
 
-    internal static void AssertSameEdits(int seed, IReadOnlyList<ReferenceByteEdit> expected, IReadOnlyList<ByteEdit> actual)
-    {
-        Assert.True(expected.Count == actual.Count, $"seed {seed} : {actual.Count} plages au lieu de {expected.Count}.");
-        for (int i = 0; i < expected.Count; i++)
+        AssertBytes("avant de la passe", _ref.Current, actual.Before.ReadAll());
+        var after = _ref.Current.ToArray();
+        foreach (var e in expected.Edits) e.NewBytes.CopyTo(after, e.Offset);
+        AssertBytes("après de la passe", after, actual.After.ReadAll());
+
+        var runs = actual.Runs().ToList();
+        for (int i = 1; i < runs.Count; i++)
+            Assert.True(runs[i].Start > runs[i - 1].End || (runs[i].Start == runs[i - 1].End && runs[i].Length > 0), "plages en désordre ou qui se recouvrent");
+        int r = 0;
+        foreach (var e in expected.Edits)
         {
-            var e = expected[i];
-            var a = actual[i];
-            if (e.Offset != a.Offset || !e.OldBytes.AsSpan().SequenceEqual(a.OldBytes) || !e.NewBytes.AsSpan().SequenceEqual(a.NewBytes))
-                throw new XunitException($"seed {seed} : plage {i} différente (attendue à {e.Offset}, {e.Length} o ; obtenue à {a.Offset}, {a.Length} o).");
+            while (r < runs.Count && runs[r].End <= e.Offset) r++;
+            Assert.True(r < runs.Count && runs[r].Start <= e.Offset && runs[r].End >= e.Offset + e.Length,
+                $"l'écriture [{e.Offset}, {e.Offset + e.Length}) n'est dans aucune plage");
         }
     }
 
@@ -477,7 +577,7 @@ internal static class OracleData
 /// <summary>Comment l'oracle lit le cœur : un seul endroit à changer quand les lectures changent.</summary>
 internal static class OracleRead
 {
-    public static byte[] Original(FileBuffer buffer) => buffer.OriginalView.ReadAll();
+    public static byte[] Original(FileBuffer buffer) => buffer.Original.ReadAll();
 
-    public static byte[] Current(FileBuffer buffer) => buffer.CurrentView.ReadAll();
+    public static byte[] Current(FileBuffer buffer) => buffer.Current.ReadAll();
 }

@@ -2,27 +2,24 @@ namespace DataGlitchCore.Core;
 
 /// <summary>
 /// Construit une passe de destruction (<see cref="DestructionBatch"/>) à partir
-/// d'un <see cref="FileBuffer"/> et de <see cref="DestructionOptions"/>. Ne mute
-/// pas le buffer : il lit l'état courant (état pré-passe cohérent) et renvoie les
-/// écritures à appliquer via le <see cref="OperationJournal"/>. Avec une seed
-/// fixée, la même config produit exactement le même rendu.
+/// d'un <see cref="FileBuffer"/> et de <see cref="DestructionOptions"/>. Ne
+/// change rien à l'état courant : la passe s'écrit dans un segment, que le
+/// <see cref="OperationJournal"/> applique ensuite. Avec une seed fixée, la
+/// même config produit exactement le même rendu, octet pour octet, que les
+/// versions d'avant le buffer sur disque (spec dataglitchcore-buffer, §13.1).
 ///
 /// Entièrement agnostique au format du fichier — aucune notion de PCM, de trame
 /// vidéo ou de tout autre domaine. Un projet qui connaît son format (WAV, AVI…)
 /// construit le <see cref="DestructionMask"/> qu'il lui passe, et peut affiner le
 /// résultat après coup (par ex. confiner la dégradation à une bande de fréquences)
-/// en repartant des <see cref="DestructionBatch.Edits"/> renvoyés — voir
-/// <see cref="ToRuns"/>, conçu justement pour ce genre de post-traitement.
+/// en relisant <see cref="DestructionBatch.Before"/> et <see cref="DestructionBatch.After"/>,
+/// puis en écrivant le résultat par <see cref="PassBuilder.WriteDiff"/>.
 /// </summary>
 public static class DestructionEngine
 {
     /// <summary>
     /// Surcharge historique : un plancher unique (<see cref="HeaderInfo.PayloadStart"/>),
-    /// adaptée en un <see cref="DestructionMask"/> équivalent. Conservée telle
-    /// quelle pour ne rien casser côté appelants existants (le WAV n'a qu'un
-    /// seul en-tête à protéger) — l'AVI, qui a besoin de plusieurs régions
-    /// entrelacées, passe directement par la surcharge à
-    /// <see cref="DestructionMask"/>.
+    /// adaptée en un <see cref="DestructionMask"/> équivalent.
     /// </summary>
     public static DestructionBatch BuildBatch(FileBuffer buffer, DestructionOptions options, HeaderInfo? header = null)
     {
@@ -37,127 +34,126 @@ public static class DestructionEngine
     /// la zone ciblée par <see cref="DestructionOptions.RegionStart"/>/<see cref="DestructionOptions.RegionEnd"/>
     /// est intersectée avec les régions du masque, ce qui donne une liste de
     /// fenêtres disjointes — la boucle de blocs tourne à l'intérieur de
-    /// chacune, jamais en dehors. Avec un masque à une seule région non
-    /// bornée (<see cref="DestructionMask.WholeBuffer"/>,
-    /// <see cref="DestructionMask.FromPayloadStart"/>), le résultat est
-    /// identique bit à bit à l'ancien modèle à un seul plancher — ce n'est
-    /// pas une coïncidence, c'est la même formule qui dégénère en la même
-    /// plage unique.
+    /// chacune, jamais en dehors.
+    ///
+    /// L'état d'avant la passe se lit par fenêtres (1 Mio) ; l'écho de
+    /// <see cref="DestructionOperator.ShiftBlock"/> est servi par la fenêtre
+    /// courante ou la précédente, sinon par une lecture directe. Deux blocs
+    /// modifiés d'une même fenêtre du masque, à moins de 12 octets l'un de
+    /// l'autre, partagent une plage du segment.
     /// </summary>
     public static DestructionBatch BuildBatch(FileBuffer buffer, DestructionOptions options, DestructionMask mask)
     {
-        int length = buffer.Length;
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(mask);
+
+        using var builder = buffer.BeginPass();
+        long length = buffer.Length;
         int blockSize = Math.Max(MinBlockSize(options.Operator), options.BlockSize);
 
         // zone ciblée, en octets — le masque, pas ce plancher, protège
-        int start = (int)Math.Clamp(options.RegionStart * length, 0, length);
-        int end = (int)Math.Clamp(options.RegionEnd * length, 0, length);
+        long start = (long)Math.Clamp(options.RegionStart * length, 0, length);
+        long end = (long)Math.Clamp(options.RegionEnd * length, 0, length);
         if (end < start) (start, end) = (end, start);
 
         var windows = IntersectWindows(start, end, mask, length);
-        if (windows.Count == 0) return new DestructionBatch(DescribeLabel(options), []);
+        if (windows.Count == 0) return builder.Build(DescribeLabel(options));
 
         // Espace-payload : les fenêtres mises bout à bout comme un buffer
         // virtuel contigu, pour que ShiftBlock (l'écho) ne puisse jamais lire
-        // un octet protégé situé dans un trou entre deux fenêtres — voir
-        // PayloadSpace plus bas.
-        var cumulative = new int[windows.Count + 1];
+        // un octet protégé situé dans un trou entre deux fenêtres.
+        var cumulative = new long[windows.Count + 1];
         for (int i = 0; i < windows.Count; i++) cumulative[i + 1] = cumulative[i] + windows[i].Length;
         var space = new PayloadSpace(windows, cumulative);
 
         var rng = options.Seed is int s ? new Random(s) : new Random();
         int maxShift = Math.Max(1, options.MaxShiftBlocks);
-        List<ByteEdit> edits = new();
+        using var reader = new PassReader(buffer, builder.BaseState.Layers, Math.Max(buffer.Options.ReadWindowBytes, blockSize));
+        var writer = builder.Writer;
+        int shift = buffer.Options.ChunkShift;
+
+        var oldBytes = new byte[blockSize];
+        var newBytes = new byte[blockSize];
+        var original = new byte[blockSize];
+        var gap = new byte[SegmentFormat.RunHeaderSize];
+        long previousEnd = 0;
+        int previousWindow = -1;
 
         for (int w = 0; w < windows.Count; w++)
         {
             var window = windows[w];
-            int windowVirtualStart = cumulative[w];
+            long windowVirtualStart = cumulative[w];
 
-            for (int off = window.Start; off < window.End; off += blockSize)
+            for (long off = window.Start; off < window.End; off += blockSize)
             {
-                int len = Math.Min(blockSize, window.End - off);
+                int len = (int)Math.Min(blockSize, window.End - off);
                 if (rng.NextDouble() >= options.Density) continue;
 
-                int virtualOff = windowVirtualStart + (off - window.Start);
-                var oldBytes = buffer.Read(off, len);
-                var newBytes = Apply(buffer, options, rng, off, len, virtualOff, space, maxShift);
+                long virtualOff = windowVirtualStart + (off - window.Start);
+                var old = oldBytes.AsSpan(0, len);
+                var orig = original.AsSpan(0, len);
+                var dst = newBytes.AsSpan(0, len);
+                reader.Block(off, old, orig);
+                Apply(reader, options, rng, len, virtualOff, space, maxShift, old, dst);
 
                 // Fenêtres par frame ⇒ beaucoup de blocs courts où l'opérateur
-                // ne change en fait rien (Reverse sur 1 octet, écho qui retombe
-                // sur lui-même…) : sans ce garde-fou, un ByteEdit sans le
-                // moindre changement gonflerait BytesChanged, allumerait
-                // DiffMap à tort et polluerait l'undo pour rien.
-                if (newBytes.AsSpan().SequenceEqual(oldBytes)) continue;
+                // ne change en fait rien : sans ce garde-fou, une écriture sans
+                // le moindre changement gonflerait BytesChanged et la diff.
+                if (dst.SequenceEqual(old)) continue;
 
-                edits.Add(new ByteEdit(off, oldBytes, newBytes));
+                long gapLength = off - previousEnd;
+                if (previousWindow == w && writer.InRun && gapLength < SegmentFormat.RunHeaderSize)
+                {
+                    // les octets de l'écart gardent leur valeur d'avant la passe
+                    var between = gap.AsSpan(0, (int)gapLength);
+                    reader.Before(previousEnd, between);
+                    writer.Append(between);
+                }
+                else
+                {
+                    writer.StartRun(off);
+                }
+                writer.Append(dst);
+                builder.CountEdit(off, off + len);
+                AddDeltas(writer, shift, off, old, dst, orig);
+                previousEnd = off + len;
+                previousWindow = w;
             }
         }
 
-        return new DestructionBatch(DescribeLabel(options), edits);
+        return builder.Build(DescribeLabel(options));
     }
 
     /// <summary>
-    /// Intersecte la zone ciblée <c>[start, end)</c> (déjà normalisée par
-    /// l'appelant — <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
-    /// y échange les bornes si <c>RegionStart &gt; RegionEnd</c>) avec les
-    /// régions du masque, ramenées à <c>[0, length)</c>. Le résultat est une
-    /// liste de fenêtres disjointes, potentiellement vide si la zone ciblée
-    /// et les régions protégées ne se recouvrent pas du tout — une intersection
-    /// vide est la bonne réponse dans ce cas, ce qui écarte le bug de l'ancien
-    /// modèle : là où un plancher appliqué APRÈS le calcul de la zone pouvait,
-    /// combiné à l'ancien échange de bornes, faire tomber la destruction À
-    /// L'INTÉRIEUR d'un en-tête prétendument protégé.
+    /// Les compteurs du segment : par tranche, les octets que le bloc fait
+    /// passer de « égal à l'original » à « différent », moins l'inverse.
     /// </summary>
-    private static List<ByteRange> IntersectWindows(int start, int end, DestructionMask mask, int length)
+    private static void AddDeltas(SegmentWriter writer, int shift, long offset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, ReadOnlySpan<byte> original)
+    {
+        int done = 0;
+        while (done < after.Length)
+        {
+            long position = offset + done;
+            long chunk = position >> shift;
+            int n = (int)Math.Min(after.Length - done, ((chunk + 1) << shift) - position);
+            long delta = DiffMap.CountDifferences(after.Slice(done, n), original.Slice(done, n))
+                       - DiffMap.CountDifferences(before.Slice(done, n), original.Slice(done, n));
+            writer.AddDelta(chunk, (int)delta);
+            done += n;
+        }
+    }
+
+    private static List<ByteRange> IntersectWindows(long start, long end, DestructionMask mask, long length)
     {
         var windows = new List<ByteRange>();
         foreach (var region in mask.ClampedTo(length))
         {
-            int lo = Math.Max(start, region.Start);
-            int hi = Math.Min(end, region.End);
+            long lo = Math.Max(start, region.Start);
+            long hi = Math.Min(end, region.End);
             if (hi > lo) windows.Add(new ByteRange(lo, hi));
         }
         return windows;
-    }
-
-    /// <summary>
-    /// Découpe un résultat en plages réellement modifiées, en comparant deux
-    /// tampons octet à octet. Sert à construire un <see cref="DestructionBatch"/>
-    /// à la main quand on post-traite le résultat de <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
-    /// (ex. filtrage fréquentiel côté audio) : sans ça, l'historique stockerait
-    /// toute la zone même là où le post-traitement n'a rien laissé passer.
-    /// </summary>
-    /// <param name="baseOffset">Offset, dans le fichier, du premier octet de <paramref name="before"/>/<paramref name="after"/>.</param>
-    /// <param name="before">Octets avant le traitement.</param>
-    /// <param name="after">Octets après le traitement, de même longueur que <paramref name="before"/>.</param>
-    /// <param name="mergeGap">Écart toléré : deux plages modifiées séparées par au plus ce nombre
-    /// d'octets inchangés forment une seule écriture, plutôt qu'une poussière de petites.</param>
-    public static List<ByteEdit> ToRuns(int baseOffset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, int mergeGap = 64)
-    {
-        var runs = new List<ByteEdit>();
-        int i = 0, n = before.Length;
-
-        while (i < n)
-        {
-            while (i < n && before[i] == after[i]) i++;
-            if (i >= n) break;
-
-            int start = i, lastDiff = i, same = 0;
-            while (i < n && same <= mergeGap)
-            {
-                if (before[i] == after[i]) same++;
-                else { same = 0; lastDiff = i; }
-                i++;
-            }
-
-            int len = lastDiff - start + 1;
-            var oldSlice = before.Slice(start, len).ToArray();
-            var newSlice = after.Slice(start, len).ToArray();
-            runs.Add(new ByteEdit(baseOffset + start, oldSlice, newSlice));
-        }
-
-        return runs;
     }
 
     /// <summary>Longueur du motif que <see cref="DestructionOperator.DuplicateBlock"/>
@@ -167,10 +163,8 @@ public static class DestructionEngine
     /// <summary>
     /// Plus petit bloc sur lequel l'opérateur peut changer quoi que ce soit :
     /// inverser 1 octet, ou répéter un motif de 4 octets sur 4 octets ou moins,
-    /// rend le bloc à l'identique. <see cref="BuildBatch(FileBuffer,DestructionOptions,DestructionMask)"/>
-    /// relève <see cref="DestructionOptions.BlockSize"/> à ce minimum ; exposé
-    /// pour que l'UI puisse l'afficher plutôt que de laisser croire qu'un bloc
-    /// plus petit est appliqué.
+    /// rend le bloc à l'identique. Le moteur relève
+    /// <see cref="DestructionOptions.BlockSize"/> à ce minimum.
     /// </summary>
     public static int MinBlockSize(DestructionOperator op) => op switch
     {
@@ -179,34 +173,32 @@ public static class DestructionEngine
         _ => 1,
     };
 
-    private static byte[] Apply(FileBuffer buffer, DestructionOptions o, Random rng, int off, int len, int virtualOff, PayloadSpace space, int maxShift)
+    private static void Apply(PassReader reader, DestructionOptions o, Random rng, int len, long virtualOff,
+                              PayloadSpace space, int maxShift, ReadOnlySpan<byte> src, Span<byte> dst)
     {
-        var dst = new byte[len];
         switch (o.Operator)
         {
             case DestructionOperator.Zero:
-                // dst déjà à zéro
+                dst.Clear();
                 break;
 
             case DestructionOperator.Fixed:
-                Array.Fill(dst, o.FixedValue);
+                dst.Fill(o.FixedValue);
                 break;
 
             case DestructionOperator.Xor:
             {
-                buffer.ReadInto(off, dst);
                 byte mask = o.XorMask;
-                for (int i = 0; i < len; i++) dst[i] ^= mask;
+                for (int i = 0; i < len; i++) dst[i] = (byte)(src[i] ^ mask);
                 break;
             }
 
             case DestructionOperator.BitShift:
             {
-                buffer.ReadInto(off, dst);
                 int k = Math.Clamp(o.BitRotate, 1, 7);
                 for (int i = 0; i < len; i++)
                 {
-                    byte b = dst[i];
+                    byte b = src[i];
                     dst[i] = (byte)((b << k) | (b >> (8 - k)));
                 }
                 break;
@@ -214,34 +206,28 @@ public static class DestructionEngine
 
             case DestructionOperator.Reverse:
             {
-                var src = buffer.Read(off, len);
                 for (int i = 0; i < len; i++) dst[i] = src[len - 1 - i];
                 break;
             }
 
             case DestructionOperator.ShiftBlock:
             {
-                // L'écho travaille en espace-payload (voir PayloadSpace), pas
-                // en offsets fichier bruts : sinon "off - shift" pourrait
-                // tomber dans un trou protégé entre deux fenêtres et recopier
-                // un en-tête de chunk dans l'image. Avec une seule fenêtre,
-                // ceci dégénère exactement en Math.Max(rangeStart, off - shift)
-                // — le comportement historique.
+                // L'écho travaille en espace-payload : "off - shift" ne peut
+                // jamais tomber dans un trou protégé entre deux fenêtres. Le
+                // calcul reste en int, comme avant : même tirage, mêmes octets.
                 int shift = rng.Next(1, maxShift + 1) * len;
-                int virtualSrc = Math.Max(0, virtualOff - shift);
-                space.ReadInto(buffer, virtualSrc, dst);
+                long virtualSrc = Math.Max(0, virtualOff - shift);
+                space.ReadInto(reader, virtualSrc, dst);
                 break;
             }
 
             case DestructionOperator.DuplicateBlock:
             {
-                var src = buffer.Read(off, len);
                 int motif = Math.Min(DuplicateMotifLength, len);
                 for (int i = 0; i < len; i++) dst[i] = src[i % motif];
                 break;
             }
         }
-        return dst;
     }
 
     private static string DescribeLabel(DestructionOptions o)
@@ -254,26 +240,24 @@ public static class DestructionEngine
     /// <summary>
     /// Vue "toutes les fenêtres mises bout à bout" d'un buffer troué par des
     /// régions protégées — l'espace dans lequel <see cref="DestructionOperator.ShiftBlock"/>
-    /// calcule sa source d'écho, pour ne jamais pouvoir lire un octet hors
-    /// des fenêtres destructibles. <paramref name="cumulative"/>[i] est la
-    /// somme des longueurs des fenêtres avant l'indice i (donc le début, en
-    /// espace virtuel, de la fenêtre i) ; <c>cumulative.Length == windows.Count + 1</c>.
+    /// calcule sa source d'écho. <paramref name="cumulative"/>[i] est le début,
+    /// en espace virtuel, de la fenêtre i.
     /// </summary>
-    private readonly struct PayloadSpace(IReadOnlyList<ByteRange> windows, int[] cumulative)
+    private readonly struct PayloadSpace(IReadOnlyList<ByteRange> windows, long[] cumulative)
     {
-        public void ReadInto(FileBuffer buffer, int virtualStart, Span<byte> dst)
+        public void ReadInto(PassReader reader, long virtualStart, Span<byte> dst)
         {
             int remaining = dst.Length;
-            int v = virtualStart;
+            long v = virtualStart;
             int written = 0;
             while (remaining > 0)
             {
                 int idx = LocateWindowIndex(v);
-                int withinWindow = v - cumulative[idx];
-                int available = windows[idx].Length - withinWindow;
-                int take = Math.Min(remaining, available);
+                long withinWindow = v - cumulative[idx];
+                long available = windows[idx].Length - withinWindow;
+                int take = (int)Math.Min(remaining, available);
 
-                buffer.ReadInto(windows[idx].Start + withinWindow, dst.Slice(written, take));
+                reader.Before(windows[idx].Start + withinWindow, dst.Slice(written, take));
 
                 written += take;
                 v += take;
@@ -281,9 +265,8 @@ public static class DestructionEngine
             }
         }
 
-        /// <summary>Plus grand indice <c>i</c> tel que <c>cumulative[i] &lt;= virtualOffset</c>
-        /// — la fenêtre qui contient cette position virtuelle.</summary>
-        private int LocateWindowIndex(int virtualOffset)
+        /// <summary>Plus grand indice <c>i</c> tel que <c>cumulative[i] &lt;= virtualOffset</c>.</summary>
+        private int LocateWindowIndex(long virtualOffset)
         {
             int lo = 0, hi = windows.Count - 1, idx = 0;
             while (lo <= hi)
@@ -293,6 +276,71 @@ public static class DestructionEngine
                 else hi = mid - 1;
             }
             return idx;
+        }
+    }
+
+    /// <summary>
+    /// L'état d'avant la passe, lu par fenêtres qui avancent avec les blocs :
+    /// la fenêtre courante et la précédente, et l'original aux mêmes offsets,
+    /// lu une seule fois pour les deux usages.
+    /// </summary>
+    private sealed class PassReader(FileBuffer buffer, Segment[] layers, int size) : IDisposable
+    {
+        private readonly IBlob _original = buffer.Store.Source;
+        private readonly long _length = buffer.Length;
+        private Window _current = new(size);
+        private Window _previous = new(size);
+
+        /// <summary>Un bloc, et l'original au même endroit. La fenêtre avance jusqu'à lui s'il n'y est pas.</summary>
+        public void Block(long offset, Span<byte> before, Span<byte> original)
+        {
+            if (!_current.Contains(offset, before.Length))
+            {
+                (_previous, _current) = (_current, _previous);
+                _current.Load(_original, layers, offset, (int)Math.Min(size, _length - offset));
+            }
+            _current.Copy(offset, before, original);
+        }
+
+        /// <summary>Des octets de l'état d'avant : depuis une des deux fenêtres, sinon par une lecture directe.</summary>
+        public void Before(long offset, Span<byte> destination)
+        {
+            if (_current.Contains(offset, destination.Length)) _current.Copy(offset, destination, default);
+            else if (_previous.Contains(offset, destination.Length)) _previous.Copy(offset, destination, default);
+            else LayeredSource.ReadLayers(_original, layers, offset, destination);
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Window(int size)
+        {
+            private readonly byte[] _before = new byte[size];
+            private readonly byte[] _original = new byte[size];
+            private long _start = -1;
+            private int _count;
+
+            public bool Contains(long offset, int length) =>
+                _start >= 0 && offset >= _start && offset + length <= _start + _count;
+
+            public void Load(IBlob original, Segment[] layers, long offset, int count)
+            {
+                var orig = _original.AsSpan(0, count);
+                var before = _before.AsSpan(0, count);
+                original.Read(offset, orig);
+                orig.CopyTo(before);
+                foreach (var layer in layers) layer.CopyInto(offset, before);
+                _start = offset;
+                _count = count;
+            }
+
+            public void Copy(long offset, Span<byte> before, Span<byte> original)
+            {
+                int at = (int)(offset - _start);
+                _before.AsSpan(at, before.Length).CopyTo(before);
+                if (!original.IsEmpty) _original.AsSpan(at, original.Length).CopyTo(original);
+            }
         }
     }
 }

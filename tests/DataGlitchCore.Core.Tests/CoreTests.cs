@@ -8,68 +8,12 @@ public class CoreTests
     // ---- FileBuffer ----
 
     [Fact]
-    public void FileBuffer_Truncates_At_Cap()
-    {
-        var data = new byte[1000];
-        var buf = FileBuffer.Load("x.bin", new MemoryStream(data), maxBytes: 256);
-        Assert.True(buf.Truncated);
-        Assert.Equal(256, buf.Length);
-    }
-
-    [Fact]
     public void FileBuffer_Keeps_Original_Untouched()
     {
         var buf = FileBuffer.FromBytes("x.bin", new byte[] { 1, 2, 3, 4 });
-        buf.Write(1, new byte[] { 9, 9 });
-        Assert.Equal(new byte[] { 1, 2, 3, 4 }, buf.OriginalView.ReadAll());
-        Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.CurrentView.ReadAll());
-    }
-
-    [Fact]
-    public void FileBuffer_Clamps_An_Oversized_Cap_Instead_Of_Falling_Back()
-    {
-        // Un cap au-delà du représentable doit être ramené au plafond, PAS
-        // faire retomber sur le défaut : l'ancienne version renvoyait
-        // silencieusement à 200 Mo, ce qui aurait tronqué un fichier de 2 Go
-        // sans le moindre signe dès qu'un réglage laisse monter le cap.
-        var data = new byte[1000];
-        var buf = FileBuffer.Load("x.bin", new MemoryStream(data), maxBytes: long.MaxValue);
-        Assert.False(buf.Truncated);
-        Assert.Equal(1000, buf.Length);
-    }
-
-    [Fact]
-    public void FileBuffer_Sizes_Exactly_When_The_Length_Is_Known()
-    {
-        // Flux non seekable (cas d'un upload navigateur) : sans expectedLength
-        // il faut passer par le chemin à tampon croissant, avec il alloue juste.
-        // Les deux doivent produire le même contenu — c'est tout ce que
-        // l'appelant a le droit d'observer.
-        var data = Enumerable.Range(0, 500).Select(i => (byte)i).ToArray();
-
-        var blind = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096);
-        var sized = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 4096, expectedLength: data.Length);
-
-        Assert.Equal(data, blind.CurrentView.ReadAll());
-        Assert.Equal(data, sized.CurrentView.ReadAll());
-        Assert.False(sized.Truncated);
-    }
-
-    [Fact]
-    public void FileBuffer_Truncates_On_The_Sized_Path_Too()
-    {
-        var data = new byte[1000];
-        var buf = FileBuffer.Load("x.bin", new NonSeekableStream(data), maxBytes: 256, expectedLength: data.Length);
-        Assert.True(buf.Truncated);
-        Assert.Equal(256, buf.Length);
-    }
-
-    /// <summary>Flux qui refuse de dire sa taille — ce que fait le flux d'un
-    /// InputFile Blazor, et donc le cas qui décide du chemin de lecture.</summary>
-    private sealed class NonSeekableStream(byte[] data) : MemoryStream(data)
-    {
-        public override bool CanSeek => false;
-        public override long Length => throw new NotSupportedException();
+        new OperationJournal(buf).Write(buf, 1, [9, 9]);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, buf.Original.ReadAll());
+        Assert.Equal(new byte[] { 1, 9, 9, 4 }, buf.Current.ReadAll());
     }
 
     // ---- Journal ----
@@ -79,21 +23,20 @@ public class CoreTests
     {
         var buf = FileBuffer.FromBytes("x.bin", new byte[] { 10, 20, 30, 40, 50 });
         var journal = new OperationJournal(buf);
-        var batch = new DestructionBatch("t", new[]
-        {
-            new ByteEdit(1, new byte[] { 20 }, new byte[] { 200 }),
-            new ByteEdit(3, new byte[] { 40 }, new byte[] { 240 }),
-        });
+        using var builder = buf.BeginPass();
+        builder.WriteDiff(0, new byte[] { 10, 20, 30, 40, 50 }, new byte[] { 10, 200, 30, 240, 50 }, mergeGap: 0);
+        var batch = builder.Build("t");
 
-        journal.Apply(batch);
-        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.CurrentView.ReadAll());
+        var info = journal.Apply(batch);
+        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.Current.ReadAll());
+        Assert.Equal(("t", 2L, 2L, 1L, 4L), (info.Label, info.EditCount, info.BytesChanged, info.FirstOffset, info.LastOffset));
 
-        journal.Undo();
-        Assert.Equal(new byte[] { 10, 20, 30, 40, 50 }, buf.CurrentView.ReadAll());
+        Assert.Equal(info, journal.Undo());
+        Assert.Equal(new byte[] { 10, 20, 30, 40, 50 }, buf.Current.ReadAll());
         Assert.True(journal.CanRedo);
 
-        journal.Redo();
-        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.CurrentView.ReadAll());
+        Assert.Equal(info, journal.Redo());
+        Assert.Equal(new byte[] { 10, 200, 30, 240, 50 }, buf.Current.ReadAll());
     }
 
     [Fact]
@@ -101,7 +44,12 @@ public class CoreTests
     {
         var buf = FileBuffer.FromBytes("x.bin", new byte[8]);
         var journal = new OperationJournal(buf);
-        DestructionBatch Pass(int at) => new("t", [new ByteEdit(at, [0], [1])]);
+        DestructionBatch Pass(int at)
+        {
+            using var builder = buf.BeginPass();
+            builder.WriteDiff(at, [0], [1]);
+            return builder.Build("t");
+        }
 
         var a = Pass(0);
         Assert.Equal(0, a.Id); // pas encore appliquée
@@ -109,22 +57,32 @@ public class CoreTests
         var b = Pass(1);
         journal.Apply(b);
         Assert.Equal((1L, 2L), (a.Id, b.Id));
+        Assert.Equal([1L, 2L], journal.History.Select(p => p.Id));
 
         // annuler et rétablir gardent le numéro : c'est la même passe
         journal.Undo();
         journal.Redo();
-        Assert.Equal(2, b.Id);
+        Assert.Equal(2, journal.History[^1].Id);
 
         // le compteur ne revient jamais en arrière, même après un retour à l'original
         journal.ResetAll();
         var c = Pass(2);
         journal.Apply(c);
         Assert.Equal(3, c.Id);
+    }
 
-        // une passe appliquée de nouveau est une nouvelle application
-        journal.Undo();
-        journal.Apply(c);
-        Assert.Equal(4, c.Id);
+    [Fact]
+    public void Journal_Keeps_The_AppData_Of_Each_Pass()
+    {
+        var buf = FileBuffer.FromBytes("x.bin", new byte[8]);
+        var journal = new OperationJournal(buf);
+        using var builder = buf.BeginPass();
+        builder.WriteDiff(3, [0], [7]);
+
+        var info = journal.Apply(builder.Build("t"), appData: "frames:3");
+
+        Assert.Equal("frames:3", info.AppData);
+        Assert.Equal("frames:3", journal.History.Single().AppData);
     }
 
     // ---- Engine ----
@@ -142,11 +100,8 @@ public class CoreTests
 
         Assert.Equal(batchA.EditCount, batchB.EditCount);
         Assert.True(batchA.EditCount > 0);
-        for (int i = 0; i < batchA.EditCount; i++)
-        {
-            Assert.Equal(batchA.Edits[i].Offset, batchB.Edits[i].Offset);
-            Assert.Equal(batchA.Edits[i].NewBytes, batchB.Edits[i].NewBytes);
-        }
+        Assert.Equal(batchA.Runs(), batchB.Runs());
+        Assert.Equal(batchA.After.ReadAll(), batchB.After.ReadAll());
     }
 
     [Fact]
@@ -161,8 +116,8 @@ public class CoreTests
         var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, ProtectHeader = true };
         var batch = DestructionEngine.BuildBatch(buf, opts, header);
 
-        Assert.NotEmpty(batch.Edits);
-        Assert.All(batch.Edits, e => Assert.True(e.Offset >= header.PayloadStart));
+        Assert.NotEmpty(batch.Runs());
+        Assert.All(batch.Runs(), r => Assert.True(r.Start >= header.PayloadStart));
     }
 
     [Fact]
@@ -174,7 +129,7 @@ public class CoreTests
         var opts = new DestructionOptions { Seed = 1, Density = 1.0, BlockSize = 8, ProtectHeader = false };
         var batch = DestructionEngine.BuildBatch(buf, opts, header);
 
-        Assert.Contains(batch.Edits, e => e.Offset < header.PayloadStart);
+        Assert.Contains(batch.Runs(), r => r.Start < header.PayloadStart);
     }
 
     [Fact]
@@ -185,9 +140,9 @@ public class CoreTests
         var opts = new DestructionOptions { Seed = 7, Density = 1.0, BlockSize = 8, Operator = DestructionOperator.Xor, XorMask = 0xAA };
 
         journal.Apply(DestructionEngine.BuildBatch(buf, opts));
-        Assert.NotEqual(buf.OriginalView.ReadAll(), buf.CurrentView.ReadAll());
+        Assert.NotEqual(buf.Original.ReadAll(), buf.Current.ReadAll());
         journal.Apply(DestructionEngine.BuildBatch(buf, opts)); // XOR involutif
-        Assert.Equal(buf.OriginalView.ReadAll(), buf.CurrentView.ReadAll());
+        Assert.Equal(buf.Original.ReadAll(), buf.Current.ReadAll());
     }
 
     // ---- DestructionMask (protection multi-régions, pour l'AVI) ----
@@ -207,11 +162,8 @@ public class CoreTests
 
         Assert.Equal(viaHeader.EditCount, viaMask.EditCount);
         Assert.True(viaHeader.EditCount > 0);
-        for (int i = 0; i < viaHeader.EditCount; i++)
-        {
-            Assert.Equal(viaHeader.Edits[i].Offset, viaMask.Edits[i].Offset);
-            Assert.Equal(viaHeader.Edits[i].NewBytes, viaMask.Edits[i].NewBytes);
-        }
+        Assert.Equal(viaHeader.Runs(), viaMask.Runs());
+        Assert.Equal(viaHeader.After.ReadAll(), viaMask.After.ReadAll());
     }
 
     [Fact]
@@ -224,8 +176,8 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, mask);
 
-        Assert.NotEmpty(batch.Edits);
-        Assert.All(batch.Edits, e => Assert.Contains(regions, r => e.Offset >= r.Start && e.Offset + e.Length <= r.End));
+        Assert.NotEmpty(batch.Runs());
+        Assert.All(batch.Runs(), e => Assert.Contains(regions, r => e.Start >= r.Start && e.End <= r.End));
     }
 
     [Fact]
@@ -240,7 +192,7 @@ public class CoreTests
 
         journal.Apply(DestructionEngine.BuildBatch(buf, opts, mask));
 
-        var current = buf.CurrentView.ReadAll();
+        var current = buf.Current.ReadAll();
         for (int i = 0; i < original.Length; i++)
         {
             bool inRegion = regions.Any(r => i >= r.Start && i < r.End);
@@ -270,8 +222,8 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, mask);
 
-        Assert.NotEmpty(batch.Edits);
-        Assert.All(batch.Edits, e => Assert.All(e.NewBytes, b => Assert.Equal(0, b % 2)));
+        Assert.NotEmpty(batch.Runs());
+        Assert.All(batch.Writes(), e => Assert.All(e.Bytes, b => Assert.Equal(0, b % 2)));
     }
 
     [Fact]
@@ -285,7 +237,8 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, mask);
 
-        Assert.Empty(batch.Edits);
+        Assert.Empty(batch.Runs());
+        Assert.Equal(0, batch.EditCount);
     }
 
     [Theory]
@@ -304,7 +257,7 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, DestructionMask.WholeBuffer);
 
-        Assert.NotEmpty(batch.Edits);
+        Assert.NotEmpty(batch.Runs());
         Assert.True(DestructionEngine.MinBlockSize(op) > blockSize);
     }
 
@@ -337,7 +290,8 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, header);
 
-        Assert.Empty(batch.Edits);
+        Assert.Empty(batch.Runs());
+        Assert.Equal(0, batch.EditCount);
     }
 
     [Fact]
@@ -352,44 +306,52 @@ public class CoreTests
 
         var batch = DestructionEngine.BuildBatch(buf, opts, header);
 
-        Assert.Empty(batch.Edits);
+        Assert.Empty(batch.Runs());
+        Assert.Equal(0, batch.EditCount);
     }
 
-    // ---- ToRuns (post-traitement public, ex-privé sous DataBender) ----
+    // ---- PassBuilder.WriteDiff (post-traitement, ex-ToRuns) ----
+
+    private static List<(long Offset, byte[] Bytes)> Diff(int baseOffset, byte[] before, byte[] after, int mergeGap = 64)
+    {
+        var file = new byte[baseOffset + before.Length];
+        before.CopyTo(file, baseOffset);
+        var buf = FileBuffer.FromBytes("x", file);
+        using var builder = buf.BeginPass();
+        builder.WriteDiff(baseOffset, before, after, mergeGap);
+        using var batch = builder.Build("t");
+        return batch.Writes();
+    }
 
     [Fact]
-    public void ToRuns_Finds_A_Single_Changed_Range()
+    public void WriteDiff_Finds_A_Single_Changed_Range()
     {
         var before = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
         var after = (byte[])before.Clone();
         after[3] = 99; after[4] = 98;
 
-        var runs = DestructionEngine.ToRuns(baseOffset: 100, before, after);
+        var run = Assert.Single(Diff(100, before, after));
 
-        var run = Assert.Single(runs);
         Assert.Equal(103, run.Offset);
-        Assert.Equal(new byte[] { 4, 5 }, run.OldBytes);
-        Assert.Equal(new byte[] { 99, 98 }, run.NewBytes);
+        Assert.Equal(new byte[] { 99, 98 }, run.Bytes);
     }
 
     [Fact]
-    public void ToRuns_Merges_Ranges_Separated_By_A_Small_Gap()
+    public void WriteDiff_Merges_Ranges_Separated_By_A_Small_Gap()
     {
         var before = new byte[20];
         var after = (byte[])before.Clone();
         after[0] = 1;
         after[5] = 1; // écart de 4 octets identiques : sous mergeGap, doit fusionner
 
-        var runs = DestructionEngine.ToRuns(0, before, after, mergeGap: 8);
-
-        Assert.Single(runs);
+        Assert.Single(Diff(0, before, after, mergeGap: 8));
     }
 
     [Fact]
-    public void ToRuns_Is_Empty_When_Buffers_Are_Identical()
+    public void WriteDiff_Writes_Nothing_When_Buffers_Are_Identical()
     {
         var data = new byte[32];
-        Assert.Empty(DestructionEngine.ToRuns(0, data, (byte[])data.Clone()));
+        Assert.Empty(Diff(0, data, (byte[])data.Clone()));
     }
 
     // ---- DiffMap ----

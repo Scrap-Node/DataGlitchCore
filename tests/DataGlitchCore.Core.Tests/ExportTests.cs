@@ -15,7 +15,7 @@ public sealed class ExportTests : IDisposable
     public async Task WriteCurrent_WritesTheCurrentState_NotTheOriginal()
     {
         var buf = FileBuffer.FromBytes("x.bin", [1, 2, 3, 4]);
-        buf.Write(1, [9, 9]);
+        new OperationJournal(buf).Write(buf, 1, [9, 9]);
 
         using var output = new MemoryStream();
         await buf.WriteCurrentToAsync(output);
