@@ -337,16 +337,52 @@ internal sealed class Segment
         long stop = c1 + 1 <= LastChunk ? _index[c1 + 1 - FirstChunk] : TailOffset;
         if (stop < 0) stop = ~stop;
 
-        using var cursor = new RunCursor(Blob, start, TailOffset, (int)Math.Clamp(stop - start + SegmentFormat.RunHeaderSize, SegmentFormat.RunHeaderSize, SegmentFormat.CursorBytes));
-        while (cursor.Next(out long runStart, out int runLength, out long dataAt))
+        // La zone que l'index désigne (§6.1), lue par blocs de 64 Kio et parcourue
+        // sans appel par plage : à 20 segments, une lecture complète en parcourt
+        // 50 millions, et une petite lecture s'arrête dès qu'elle a dépassé sa fin,
+        // au lieu de lire toute la tranche. Les octets d'une plage qui déborde du
+        // bloc sont lus directement, à la seule place demandée.
+        long zoneEnd = Math.Min(TailOffset, Math.Max(stop, start) + SegmentFormat.RunHeaderSize);
+        var block = ArrayPool<byte>.Shared.Rent(ZoneBlockBytes);
+        try
         {
-            if (runStart >= b) break;
-            long runEnd = runStart + runLength;
-            if (runEnd <= a) continue;
-            long from = Math.Max(a, runStart), to = Math.Min(b, runEnd);
-            cursor.ReadData(dataAt + (from - runStart), destination.Slice((int)(from - a), (int)(to - from)));
+            long position = start;
+            // un premier bloc à la mesure de la demande : une petite lecture ne charge pas 64 Kio d'une longue plage
+            int next = (int)Math.Clamp(2 * (b - a), 4096, ZoneBlockBytes);
+            while (position + SegmentFormat.RunHeaderSize <= TailOffset)
+            {
+                // au-delà de la zone estimée, de petits blocs : il n'y reste en général qu'une plage
+                int size = (int)Math.Min(position < zoneEnd ? next : SegmentFormat.RunHeaderSize * 8, TailOffset - position);
+                next = ZoneBlockBytes;
+                Blob.Read(position, block.AsSpan(0, size));
+                int p = 0;
+                while (p + SegmentFormat.RunHeaderSize <= size)
+                {
+                    long runStart = BinaryPrimitives.ReadInt64LittleEndian(block.AsSpan(p));
+                    int runLength = BinaryPrimitives.ReadInt32LittleEndian(block.AsSpan(p + 8));
+                    if (runStart >= b) return;
+                    long runEnd = runStart + runLength;
+                    int data = p + SegmentFormat.RunHeaderSize;
+                    if (runEnd > a)
+                    {
+                        long from = Math.Max(a, runStart), to = Math.Min(b, runEnd);
+                        int at = (int)(from - runStart);
+                        var target = destination.Slice((int)(from - a), (int)(to - from));
+                        if (data + at + target.Length <= size) block.AsSpan(data + at, target.Length).CopyTo(target);
+                        else Blob.Read(position + data + at, target);
+                    }
+                    p = data + runLength;
+                }
+                position += p;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(block);
         }
     }
+
+    private const int ZoneBlockBytes = 64 * 1024;
 
     /// <summary>Les plages du segment, dans l'ordre, sans leurs octets.</summary>
     public IEnumerable<ByteRange> Runs()
