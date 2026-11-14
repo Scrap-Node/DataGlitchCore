@@ -4,7 +4,7 @@ using System.Text;
 namespace DataGlitchCore.Core;
 
 /// <summary>
-/// Un chunk RIFF rencontré par <see cref="Riff.Walk"/>, en profondeur : un
+/// Un chunk RIFF rencontré par <c>Riff.Walk</c>, en profondeur : un
 /// LIST est renvoyé lui-même, immédiatement suivi de ses enfants, avant le
 /// frère suivant.
 /// </summary>
@@ -17,23 +17,23 @@ namespace DataGlitchCore.Core;
 /// champ de taille. Pour un LIST, ceci inclut les 4 octets de
 /// <see cref="ListType"/> ; utiliser <see cref="DataSize"/> pour la charge
 /// utile réelle.</param>
-public sealed record RiffChunk(string Id, string? ListType, int Start, int Size)
+public sealed record RiffChunk(string Id, string? ListType, long Start, long Size)
 {
     private bool IsList => ListType is not null;
 
     /// <summary>Offset du premier octet de charge utile réelle — après
     /// id+taille (8 octets), et après le FourCC de sous-type pour un LIST
     /// (4 octets de plus).</summary>
-    public int DataStart => Start + 8 + (IsList ? 4 : 0);
+    public long DataStart => Start + 8 + (IsList ? 4 : 0);
 
     /// <summary>Taille de la charge utile réelle, hors FourCC de sous-type
     /// pour un LIST.</summary>
-    public int DataSize => Size - (IsList ? 4 : 0);
+    public long DataSize => Size - (IsList ? 4 : 0);
 
     /// <summary>Offset du chunk frère suivant — padding d'alignement 2
     /// octets inclus (RIFF impose qu'un chunk de taille impaire soit suivi
     /// d'un octet de bourrage).</summary>
-    public int NextStart => Start + 8 + Size + (Size & 1);
+    public long NextStart => Start + 8 + Size + (Size & 1);
 }
 
 public sealed class RiffFormatException(string message) : Exception(message);
@@ -77,24 +77,51 @@ public static class Riff
     public static IReadOnlyList<RiffChunk> Walk(ReadOnlySpan<byte> data, int from, int to, bool tolerateTruncation = false)
     {
         var result = new List<RiffChunk>();
-        WalkInto(data, from, to, result, tolerateTruncation);
+        WalkInto(new SpanSource(data), from, to, result, tolerateTruncation);
         return result;
     }
 
-    private static void WalkInto(ReadOnlySpan<byte> data, int from, int to, List<RiffChunk> into, bool tolerate)
+    /// <summary>
+    /// Le même parcours, sur un état lu par fenêtres : seuls les en-têtes de
+    /// chunk sont lus, jamais les charges utiles. Pour un fichier entier :
+    /// <c>Walk(view, 0, view.Length)</c>.
+    /// </summary>
+    /// <param name="data">L'état à parcourir, typiquement <see cref="FileBuffer.CurrentView"/>.</param>
+    /// <param name="from">Offset du premier chunk de la région.</param>
+    /// <param name="to">Fin de la région, exclusive.</param>
+    /// <param name="tolerateTruncation">Voir <see cref="Walk(ReadOnlySpan{byte}, int, int, bool)"/>.</param>
+    /// <exception cref="RiffFormatException">Voir <see cref="Walk(ReadOnlySpan{byte}, int, int, bool)"/>.</exception>
+    public static IReadOnlyList<RiffChunk> Walk(ByteView data, long from, long to, bool tolerateTruncation = false)
     {
-        int pos = from;
+        ArgumentNullException.ThrowIfNull(data);
+        var result = new List<RiffChunk>();
+        using var window = new ByteWindow(data, HeaderWindowSize);
+        WalkInto(new ViewSource(window), from, to, result, tolerateTruncation);
+        return result;
+    }
+
+    /// <summary>
+    /// Fenêtre de lecture des en-têtes : assez grande pour servir d'un coup
+    /// les en-têtes rapprochés (petites frames, chunks de hdrl), assez petite
+    /// pour ne pas relire beaucoup plus que l'en-tête d'une grosse frame.
+    /// </summary>
+    private const int HeaderWindowSize = 16 * 1024;
+
+    private static void WalkInto<TSource>(TSource data, long from, long to, List<RiffChunk> into, bool tolerate)
+        where TSource : IHeaderSource, allows ref struct
+    {
+        long pos = from;
         while (pos + 8 <= to)
         {
-            string id = ReadFourCc(data, pos);
-            uint declaredSize = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(pos + 4, 4));
+            string id = data.ReadFourCc(pos);
+            uint declaredSize = data.ReadUInt32(pos + 4);
             if (declaredSize > int.MaxValue)
             {
                 throw new RiffFormatException(
                     $"Chunk '{id}' à l'offset {pos} déclare une taille de {declaredSize} octets, " +
                     "hors de portée (offsets 32 bits) — probablement un AVI OpenDML (> 2 Go), hors périmètre.");
             }
-            int size = (int)declaredSize;
+            long size = declaredSize;
 
             bool isList = id is "RIFF" or "LIST";
             if (isList && size < 4)
@@ -127,7 +154,7 @@ public static class Riff
                 if (isList && size < 4) return;
             }
 
-            string? listType = isList ? ReadFourCc(data, pos + 8) : null;
+            string? listType = isList ? data.ReadFourCc(pos + 8) : null;
             var chunk = new RiffChunk(id, listType, pos, size);
 
             into.Add(chunk);
@@ -137,6 +164,26 @@ public static class Riff
         }
     }
 
-    private static string ReadFourCc(ReadOnlySpan<byte> data, int pos) =>
-        Encoding.ASCII.GetString(data.Slice(pos, 4));
+    /// <summary>Ce que le parcours lit : un FourCC et une taille, aux offsets des en-têtes.</summary>
+    private interface IHeaderSource
+    {
+        string ReadFourCc(long pos);
+        uint ReadUInt32(long pos);
+    }
+
+    private readonly ref struct SpanSource(ReadOnlySpan<byte> data) : IHeaderSource
+    {
+        private readonly ReadOnlySpan<byte> _data = data;
+
+        public string ReadFourCc(long pos) => Encoding.ASCII.GetString(_data.Slice(checked((int)pos), 4));
+
+        public uint ReadUInt32(long pos) => BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(checked((int)pos), 4));
+    }
+
+    private readonly struct ViewSource(ByteWindow window) : IHeaderSource
+    {
+        public string ReadFourCc(long pos) => Encoding.ASCII.GetString(window.Exactly(pos, 4));
+
+        public uint ReadUInt32(long pos) => BinaryPrimitives.ReadUInt32LittleEndian(window.Exactly(pos, 4));
+    }
 }

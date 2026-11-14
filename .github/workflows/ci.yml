@@ -28,3 +28,24 @@ jobs:
 
       - name: Build et tests
         run: dotnet test -c Release
+
+  # L'écriture forcée sur le disque (DurableFile) passe par le système : F_FULLFSYNC
+  # sous macOS, MoveFileEx(MOVEFILE_WRITE_THROUGH) sous Windows, où DataBender est
+  # distribué. Les tests la font pour de vrai sur chaque système. Job à part, pour ne
+  # pas changer le nom de « check », exigé sur main.
+  systemes:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build et tests
+        run: dotnet test -c Release

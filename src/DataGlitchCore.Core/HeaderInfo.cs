@@ -10,4 +10,4 @@ namespace DataGlitchCore.Core;
 /// Premier octet destructible. La destruction ne descend jamais en dessous, ce qui
 /// garde l'en-tête intact et le fichier lisible même après une passe agressive.
 /// </param>
-public sealed record HeaderInfo(int PayloadStart);
+public sealed record HeaderInfo(long PayloadStart);
