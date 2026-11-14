@@ -31,7 +31,13 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
 - `OperationJournal` : chaque passe est un cran d'annulation et de rétablissement, qui ne
   réécrit aucun octet : annuler déplace le sommet de la pile de segments. Il numérote les
   passes (`PassInfo.Id`), range avec chacune une donnée de l'app (`AppData`), et compte
-  exactement les octets qui diffèrent de l'original (`ChangedBytes`).
+  exactement les octets qui diffèrent de l'original (`ChangedBytes`). L'historique est
+  borné (`JournalOptions`) : au-delà de 20 passes, ou du budget disque de la session, les
+  plus anciennes fusionnent dans une base et ne s'annulent plus une à une
+  (`MergedPasses`, `MergedAppData`). La base devient une copie complète de l'état dès
+  qu'elle couvre la moitié du fichier : une session ne prend jamais plus de deux fois le
+  fichier, plus ses passes annulables. Une passe qui ne tiendrait pas dans le budget est
+  refusée avant d'être construite.
 - `SequenceScript` : le montage d'une suite d'unités numérotées (les frames d'une vidéo,
   des blocs d'échantillons) : supprimer, répéter, coller une plage ailleurs, avec
   annuler et rétablir. Son plan se déroule en une sortie (`SequenceOutput`) qui dit,
