@@ -221,6 +221,9 @@ internal sealed class BaseLayer
     /// Une base dense : <paramref name="bottom"/> cloné dans <c>tmp/</c>, puis
     /// chaque tranche que touchent les segments relue, recouverte et réécrite.
     /// Les autres tranches restent celles du clone, sans être copiées sous APFS.
+    /// La tranche se relit dans <paramref name="bottom"/>, pas dans le clone :
+    /// le cache disque est propre à chaque fichier, et le clone, neuf, n'y est
+    /// pas, alors que la construction de la passe vient de lire le fond.
     /// </summary>
     private static IBlob WriteDense(FileBuffer buffer, IBlob bottom, IReadOnlyList<Segment> segments, long id, List<IBlob> written)
     {
@@ -237,7 +240,7 @@ internal sealed class BaseLayer
                 if (!Touched(segments, c)) continue;
                 long at = c << shift;
                 var bytes = window.AsSpan(0, (int)Math.Min(1L << shift, buffer.Length - at));
-                blob.Read(at, bytes);
+                bottom.Read(at, bytes);
                 foreach (var segment in segments) segment.CopyInto(at, bytes);
                 blob.Write(at, bytes);
             }
