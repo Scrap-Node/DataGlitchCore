@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Banc de mesure du cœur (spec dataglitchcore-buffer, §13.3 et D14).
+       Hors CI : il demande des fichiers de plusieurs centaines de Mo et une
+       machine de référence. Il est dans la solution pour que la CI le compile,
+       et qu'il ne prenne pas de retard sur l'API. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DataGlitchCore.Core\DataGlitchCore.Core.csproj" />
+  </ItemGroup>
+
+</Project>
