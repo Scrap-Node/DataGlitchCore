@@ -12,10 +12,13 @@ public sealed class JournalOptions
 
     /// <summary>
     /// Budget disque de la session, en octets : l'original, la base et les
-    /// segments, à rétablir compris. Au-delà, les passes les plus anciennes
-    /// fusionnent ; une passe qui ne tiendrait pas, même après fusion, est
-    /// refusée avant d'être construite. Sans budget, seul
-    /// <see cref="MaxUndoSteps"/> borne l'historique.
+    /// segments, à rétablir compris, et pendant une fusion la nouvelle base
+    /// aussi. Une passe n'est acceptée que si elle laisse la place d'écrire une
+    /// base (une copie du fichier au plus) : le budget doit donc couvrir au
+    /// moins trois fois le fichier, plus les passes annulables. Quand cette
+    /// marge se resserre, les passes les plus anciennes fusionnent ; une passe
+    /// qui ne tiendrait pas est refusée avant d'être construite. Sans budget,
+    /// seul <see cref="MaxUndoSteps"/> borne l'historique.
     /// </summary>
     public long? DiskBudgetBytes { get; init; }
 
@@ -32,14 +35,14 @@ public sealed class JournalOptions
 public sealed class DiskBudgetExceededException : InvalidOperationException
 {
     public DiskBudgetExceededException(long neededBytes, long budgetBytes)
-        : base($"Pas assez de place dans le budget disque de la session : cette passe demande jusqu'à {Units(neededBytes)}, " +
-               $"pour un budget de {Units(budgetBytes)}. Rien n'a été modifié.")
+        : base($"Pas assez de place dans le budget disque de la session : avec cette passe, et la place de réécrire sa base, " +
+               $"la session demanderait jusqu'à {Units(neededBytes)}, pour un budget de {Units(budgetBytes)}. Rien n'a été modifié.")
     {
         NeededBytes = neededBytes;
         BudgetBytes = budgetBytes;
     }
 
-    /// <summary>La place que la session occuperait au mieux, après fusion, avec la passe.</summary>
+    /// <summary>La place que demanderait la session : son disque, la passe, et la place de réécrire sa base.</summary>
     public long NeededBytes { get; }
 
     public long BudgetBytes { get; }

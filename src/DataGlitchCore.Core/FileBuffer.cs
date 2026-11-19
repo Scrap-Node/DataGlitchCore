@@ -128,11 +128,15 @@ public sealed class FileBuffer : IDisposable
 
     internal const int WriteChunkSize = 1024 * 1024;
 
-    /// <summary>Lâche les fichiers ouverts. Les segments restent sur disque.</summary>
+    /// <summary>
+    /// Lâche les fichiers ouverts. Une fusion en cours est interrompue, et ses
+    /// fichiers à moitié écrits supprimés ; les segments restent sur disque.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        Journal?.Shutdown();
         _store.Close();
     }
 
@@ -144,6 +148,21 @@ public sealed class FileBuffer : IDisposable
     /// </summary>
     internal void SetState(IBlob bottom, Segment[] layers) =>
         Volatile.Write(ref _state, new BufferState(_state.Number + 1, bottom, layers));
+
+    /// <summary>
+    /// Le même état, autrement agencé : une fusion en tâche de fond a remplacé
+    /// des segments par une base qui rend les mêmes octets. Le numéro ne change
+    /// pas : une passe construite pendant la fusion reste applicable.
+    /// </summary>
+    internal void Relayout(IBlob bottom, Segment[] layers) =>
+        Volatile.Write(ref _state, new BufferState(_state.Number, bottom, layers));
+
+    /// <summary>L'agencement courant de <paramref name="state"/>, s'il a changé depuis ; null si l'état lui-même a changé.</summary>
+    internal BufferState? NewerLayout(BufferState state)
+    {
+        var now = State;
+        return now.Number == state.Number && !ReferenceEquals(now, state) ? now : null;
+    }
 
     /// <summary>Ajoute (+1) ou retire (-1) les compteurs d'un segment.</summary>
     internal void AddDiffs(Segment segment, int sign)
@@ -180,10 +199,8 @@ public sealed class FileBuffer : IDisposable
         return DiffMap.CountChanged(Original, Current, start, end - start);
     }
 
-    /// <summary>Un fond et une pile de segments, lus ensemble.</summary>
-    internal ByteView ViewOf(IBlob bottom, Segment[] layers) => new(new LayeredSource(bottom, layers));
-
-    internal ByteView ViewOf(BufferState state) => ViewOf(state.Bottom, state.Layers);
+    /// <summary>Un état, et éventuellement une passe par-dessus (l'après d'une passe), lus ensemble.</summary>
+    internal ByteView ViewOf(BufferState state, Segment? top = null) => new(new StateSource(this, state, top));
 
     private sealed class CurrentSource(FileBuffer buffer) : ByteSource
     {
@@ -199,10 +216,41 @@ public sealed class FileBuffer : IDisposable
                     LayeredSource.ReadLayers(state.Bottom, state.Layers, offset, destination);
                     return;
                 }
-                catch (IOException) when (buffer.State.Number != state.Number)
+                catch (IOException) when (!ReferenceEquals(buffer.State, state))
                 {
                     // une fusion ou un retour à l'original a supprimé un fichier
                     // de l'état lu : on relit l'état qui l'a remplacé
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Un état figé : l'avant ou l'après d'une passe. Si une fusion en tâche
+    /// de fond en supprime des fichiers, la lecture reprend sur le nouvel
+    /// agencement du même état, qui rend les mêmes octets. Un état que le
+    /// journal a quitté (passe, annulation, retour) n'est plus garanti.
+    /// </summary>
+    private sealed class StateSource(FileBuffer buffer, BufferState state, Segment? top) : ByteSource
+    {
+        private BufferState _state = state;
+
+        public override long Length => buffer.Length;
+
+        public override void Read(long offset, Span<byte> destination)
+        {
+            while (true)
+            {
+                var layout = Volatile.Read(ref _state);
+                try
+                {
+                    LayeredSource.ReadLayers(layout.Bottom, layout.Layers, offset, destination);
+                    top?.CopyInto(offset, destination);
+                    return;
+                }
+                catch (IOException) when (buffer.NewerLayout(layout) is { } newer)
+                {
+                    Volatile.Write(ref _state, newer);
                 }
             }
         }
@@ -211,8 +259,10 @@ public sealed class FileBuffer : IDisposable
 
 /// <summary>
 /// Un état du buffer : son numéro, qui change à chaque passe, annulation,
-/// fusion ou retour ; son fond, l'original ou la base dense (§5.2) ; et sa
-/// pile de segments, la base éparse d'abord s'il y en a une.
+/// rétablissement ou retour, mais pas quand une fusion aboutit ; son fond,
+/// l'original ou la base dense (§5.2) ; et sa pile de segments, la base
+/// éparse d'abord s'il y en a une, puis les passes en cours de fusion, puis
+/// les passes annulables.
 /// </summary>
 internal sealed record BufferState(long Number, IBlob Bottom, Segment[] Layers);
 
