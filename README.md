@@ -20,6 +20,12 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
   partir de l'original et des segments qui touchent la plage.
 - `SourceFile` : la copie d'un upload dans la session, coupée à une taille maximale, avec
   son SHA-256.
+- `SessionStore<TSession>` : les sessions ouvertes d'une app, un dossier chacune, en nombre
+  borné, sous un budget disque global (`StoreOptions`) qu'il répartit entre leurs journaux.
+  Avant un import, `TryReserve` libère les caches puis les sessions les plus anciennes ;
+  `Sweep` ferme celles restées inactives. `Limits` donne la taille maximale d'un import,
+  et `SessionSettings` les réglages globaux de l'app (taille, budget, passes annulables,
+  conservation).
 - `DestructionEngine` et `DestructionOptions` : une passe de destruction (mise à zéro,
   valeur fixe, XOR, rotation de bits, inversion, décalage, répétition de bloc),
   reproductible avec une seed fixée. Elle s'écrit dans un segment, sans rien changer tant
