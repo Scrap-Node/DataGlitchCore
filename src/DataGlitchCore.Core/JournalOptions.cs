@@ -23,6 +23,14 @@ public sealed class JournalOptions
     public long? DiskBudgetBytes { get; init; }
 
     /// <summary>
+    /// Un budget qui change : le budget disque global des sessions, moins ce
+    /// que prennent les autres (<see cref="SessionStore{TSession}.BudgetFor"/>).
+    /// Lu à chaque vérification, hors du verrou du journal ; prime sur
+    /// <see cref="DiskBudgetBytes"/>. Mêmes règles que lui.
+    /// </summary>
+    public Func<long>? DiskBudget { get; init; }
+
+    /// <summary>
     /// Fusionne les <see cref="PassInfo.AppData"/> de passes qui entrent dans
     /// la base, de la plus ancienne à la plus récente ; la première est celle
     /// de la base, s'il y en a déjà une. Le résultat devient
