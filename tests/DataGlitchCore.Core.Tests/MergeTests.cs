@@ -738,6 +738,7 @@ public sealed class MergeTests : IDisposable
         var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 1 });
         using var stop = new CancellationTokenSource();
         long reads = 0;
+        var firstRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reader = Task.Run(() =>
         {
             var bytes = new byte[data.Length];
@@ -745,8 +746,15 @@ public sealed class MergeTests : IDisposable
             {
                 buffer.Current.Read(0, bytes);
                 reads++;
+                firstRead.TrySetResult();
             }
         });
+
+        // Le lecteur a lu une fois avant les écritures. Sur une CI chargée, la tâche
+        // pouvait ne démarrer qu'une fois tout fini : aucune lecture, et le test
+        // échouait sans rien prouver (CI du 14/11).
+        await Task.WhenAny(firstRead.Task, reader).WaitAsync(TimeSpan.FromSeconds(30));
+        if (reader.IsCompleted) await reader;
 
         var model = (byte[])data.Clone();
         for (int i = 0; i < 40; i++)
