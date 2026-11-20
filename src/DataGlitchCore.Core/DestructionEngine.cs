@@ -343,7 +343,7 @@ public static class DestructionEngine
                         _current.Load(_original, _state.Bottom, _state.Layers, offset, count);
                         break;
                     }
-                    catch (IOException) when (buffer.NewerLayout(_state) is { } newer)
+                    catch (Exception ex) when (FileBuffer.Gone(ex) && buffer.NewerLayout(_state) is { } newer)
                     {
                         // une fusion en tâche de fond a remplacé des fichiers de
                         // l'état d'avant : le même état, autrement agencé (§7)
@@ -368,7 +368,7 @@ public static class DestructionEngine
                         LayeredSource.ReadLayers(_state.Bottom, _state.Layers, offset, destination);
                         return;
                     }
-                    catch (IOException) when (buffer.NewerLayout(_state) is { } newer)
+                    catch (Exception ex) when (FileBuffer.Gone(ex) && buffer.NewerLayout(_state) is { } newer)
                     {
                         _state = newer;
                     }

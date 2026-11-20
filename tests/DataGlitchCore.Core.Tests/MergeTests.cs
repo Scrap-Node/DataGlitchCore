@@ -485,6 +485,45 @@ public sealed class MergeTests : IDisposable
         Assert.Equal(model, buffer.Current.ReadAll());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Reads_Follow_The_Merge_Even_When_A_Deleted_File_Says_Access_Denied(bool windows)
+    {
+        // sous Windows, ouvrir un fichier en cours de suppression rend « accès refusé », pas « introuvable »
+        var data = Ramp(8 * Chunk);
+        var model = (byte[])data.Clone();
+        using var buffer = FileBuffer.FromBytes("x", (byte[])data.Clone(), Small);
+        var store = (MemoryBlobStore)buffer.Store;
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 1 });
+        var hold = new Hold("écrite");
+        journal.MergeHook = hold.OnStep;
+        Write(journal, buffer, model, 0, Fill(3 * Chunk, 1), wait: false);
+        Write(journal, buffer, model, 5 * Chunk, Fill(100, 2), wait: false);
+        hold.WaitReached();
+        using var builder = buffer.BeginPass();
+        var before = buffer.ViewOf(builder.BaseState);
+        var batchBefore = builder.Before;
+
+        journal.MergeHook = null;
+        hold.Release();
+        Settle(journal);
+        store.Fault = (step, name) =>
+        {
+            if (step == "lire" && !store.Names.Contains(name))
+                throw windows ? new UnauthorizedAccessException($"Accès refusé : {name}") : new FileNotFoundException(name);
+        };
+        Assert.Equal(model, buffer.Current.ReadAll());
+        Assert.Equal(model, batchBefore.ReadAll());
+        Assert.Equal(model, before.ReadAll());
+        var after = (byte[])model.Clone();
+        after.AsSpan(Chunk, 10).Fill(9);
+        builder.WriteDiff(0, model, after);
+        journal.Apply(builder.Build("pendant la fusion"));
+        store.Fault = null;
+        Assert.Equal(after, buffer.Current.ReadAll());
+    }
+
     [Fact]
     public void Undo_And_Redo_During_A_Merge_Leave_The_Merging_Passes_Alone()
     {

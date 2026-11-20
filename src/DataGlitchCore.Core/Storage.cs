@@ -123,6 +123,7 @@ internal sealed class MemoryBlobStore(byte[] source) : IBlobStore
         {
             if (offset < 0 || offset + destination.Length > Length)
                 throw new IOException($"Lecture hors de {Name} : [{offset}, {offset + destination.Length}) pour {Length} octets.");
+            Store?.Fault?.Invoke("lire", Name);
             _data.AsSpan((int)offset, destination.Length).CopyTo(destination);
         }
 

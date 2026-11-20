@@ -157,6 +157,13 @@ public sealed class FileBuffer : IDisposable
     internal void Relayout(IBlob bottom, Segment[] layers) =>
         Volatile.Write(ref _state, new BufferState(_state.Number, bottom, layers));
 
+    /// <summary>
+    /// Un fichier qu'on n'a pas pu lire parce qu'il vient d'être supprimé :
+    /// introuvable, ou, sous Windows, en cours de suppression, ce qui rend
+    /// son ouverture « accès refusé ».
+    /// </summary>
+    internal static bool Gone(Exception ex) => ex is IOException or UnauthorizedAccessException;
+
     /// <summary>L'agencement courant de <paramref name="state"/>, s'il a changé depuis ; null si l'état lui-même a changé.</summary>
     internal BufferState? NewerLayout(BufferState state)
     {
@@ -216,7 +223,7 @@ public sealed class FileBuffer : IDisposable
                     LayeredSource.ReadLayers(state.Bottom, state.Layers, offset, destination);
                     return;
                 }
-                catch (IOException) when (!ReferenceEquals(buffer.State, state))
+                catch (Exception ex) when (Gone(ex) && !ReferenceEquals(buffer.State, state))
                 {
                     // une fusion ou un retour à l'original a supprimé un fichier
                     // de l'état lu : on relit l'état qui l'a remplacé
@@ -248,7 +255,7 @@ public sealed class FileBuffer : IDisposable
                     top?.CopyInto(offset, destination);
                     return;
                 }
-                catch (IOException) when (buffer.NewerLayout(layout) is { } newer)
+                catch (Exception ex) when (Gone(ex) && buffer.NewerLayout(layout) is { } newer)
                 {
                     Volatile.Write(ref _state, newer);
                 }
