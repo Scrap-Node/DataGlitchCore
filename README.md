@@ -20,6 +20,12 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
   partir de l'original et des segments qui touchent la plage.
 - `SourceFile` : la copie d'un upload dans la session, coupée à une taille maximale, avec
   son SHA-256.
+- `SessionStore<TSession>` : les sessions ouvertes d'une app, un dossier chacune, en nombre
+  borné, sous un budget disque global (`StoreOptions`) qu'il répartit entre leurs journaux.
+  Avant un import, `TryReserve` libère les caches puis les sessions les plus anciennes ;
+  `Sweep` ferme celles restées inactives. `Limits` donne la taille maximale d'un import,
+  et `SessionSettings` les réglages globaux de l'app (taille, budget, passes annulables,
+  conservation).
 - `DestructionEngine` et `DestructionOptions` : une passe de destruction (mise à zéro,
   valeur fixe, XOR, rotation de bits, inversion, décalage, répétition de bloc),
   reproductible avec une seed fixée. Elle s'écrit dans un segment, sans rien changer tant
@@ -34,9 +40,12 @@ Tout est dans l'espace de noms `DataGlitchCore.Core`.
   exactement les octets qui diffèrent de l'original (`ChangedBytes`). L'historique est
   borné (`JournalOptions`) : au-delà de 20 passes, ou du budget disque de la session, les
   plus anciennes fusionnent dans une base et ne s'annulent plus une à une
-  (`MergedPasses`, `MergedAppData`). La base devient une copie complète de l'état dès
-  qu'elle couvre la moitié du fichier : une session ne prend jamais plus de deux fois le
-  fichier, plus ses passes annulables. Une passe qui ne tiendrait pas dans le budget est
+  (`MergedPasses`, `MergedAppData`). La fusion se fait en tâche de fond : une passe rend la
+  main tout de suite, et l'état reste juste pendant la fusion, qui n'en change que
+  l'agencement sur le disque (`IsMerging`, `WaitForMergesAsync`). La base devient une
+  copie complète de l'état dès qu'elle couvre la moitié du fichier : une session ne prend
+  jamais plus de deux fois le fichier, plus ses passes annulables, hors fusion en cours.
+  Une passe qui ne tiendrait pas dans le budget, avec la place de réécrire la base, est
   refusée avant d'être construite.
 - `SequenceScript` : le montage d'une suite d'unités numérotées (les frames d'une vidéo,
   des blocs d'échantillons) : supprimer, répéter, coller une plage ailleurs, avec
@@ -72,11 +81,20 @@ Les tests comprennent un oracle (`OracleTests`) : le moteur de la 0.2.0, recopi�
 `tests/…/Reference`, sert de référence aux « mêmes octets à seed égale ». Des suites
 aléatoires de passes, d'annulations et de retours à l'original y comparent le cœur à
 chaque pas, en mémoire comme sur disque, avec des tranches et des tampons réduits à
-quelques Kio pour forcer tous les chemins. Une suite qui échoue donne sa seed :
+quelques Kio pour forcer tous les chemins. Les fusions y tournent en tâche de fond,
+attendues, libres ou retenues à une étape. Une suite qui échoue donne sa seed :
 
 ```bash
 DGC_ORACLE_SEED=1234 dotnet test --filter Oracle   # rejouer une suite
 DGC_ORACLE_SEEDS=5000 dotnet test --filter Oracle  # en lancer davantage (150 par défaut)
+```
+
+Le banc (`bench/DataGlitchCore.Bench`, hors CI) mesure le cœur seul sur des WAV de 256 Mio
+et d'1 Gio : passes enchaînées jusqu'à 30, lectures, export, annuler, fusions, mémoire et
+disque. Ses comptes rendus vont dans `bench/mesures/`.
+
+```bash
+dotnet run -c Release --project bench/DataGlitchCore.Bench -- --sizes 256,1024 --label essai
 ```
 
 ## Publier une version

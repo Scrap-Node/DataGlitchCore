@@ -223,7 +223,7 @@ public sealed class DestructionBatch : IDisposable
     public ByteView Before => _buffer.ViewOf(BaseState);
 
     /// <summary>Cet état, la passe appliquée.</summary>
-    public ByteView After => _buffer.ViewOf(BaseState.Bottom, [.. BaseState.Layers, Segment]);
+    public ByteView After => _buffer.ViewOf(BaseState, Segment);
 
     /// <summary>
     /// Les plages que la passe écrit, triées. Deux écritures d'une même fenêtre

@@ -20,17 +20,44 @@ public sealed record PassInfo(long Id, string Label, long EditCount, long BytesC
 ///
 /// L'historique est borné (<see cref="JournalOptions"/>) : au-delà de
 /// <see cref="JournalOptions.MaxUndoSteps"/> passes, ou du budget disque, les
-/// plus anciennes fusionnent dans une base, dans <see cref="Apply"/>, et ne
-/// s'annulent plus une à une. La dernière passe reste toujours annulable.
+/// plus anciennes fusionnent dans une base et ne s'annulent plus une à une. La
+/// dernière passe reste toujours annulable.
+///
+/// La fusion se fait en tâche de fond (D14). <see cref="Apply"/> rend la main
+/// tout de suite : les passes à fusionner quittent aussitôt l'historique, mais
+/// restent des couches de l'état jusqu'à ce que leur base soit écrite. L'état
+/// change alors d'agencement, pas d'octets ni de numéro. Les fusions passent
+/// une à la fois, dans l'ordre ; une passe appliquée pendant une fusion attend
+/// la suivante. Annuler et rétablir ne touchent pas aux passes en fusion ;
+/// revenir à l'original interrompt la fusion en cours et l'attend.
+///
+/// Les écritures (passes, annulations, retours) ne sont pas concurrentes entre
+/// elles : l'appelant les sérialise. La tâche de fond, elle, est synchronisée
+/// par le journal.
 /// </summary>
 public sealed class OperationJournal
 {
     private readonly FileBuffer _buffer;
     private readonly JournalOptions _options;
+    private readonly object _gate = new();
+
     private readonly List<Entry> _undo = new();
     private readonly List<Entry> _redo = new();
+    // fusionnées pour l'historique, encore des couches de l'état, les plus anciennes d'abord
+    private readonly List<Entry> _merging = new();
     private BaseLayer? _base;
     private long _lastId;
+
+    private long _mergedPasses;
+    private string? _mergedAppData;
+    private long _lastMergedId;
+
+    private Task? _worker;
+    private CancellationTokenSource _cancel = new();
+    private int _jobCount;        // passes de la fusion en cours, les premières de _merging
+    private long _reserved;       // la base en cours d'écriture, comptée au pire
+    private long _lastEstimate;   // la place demandée par la dernière passe acceptée
+    private Exception? _mergeError;
 
     public OperationJournal(FileBuffer buffer, JournalOptions? options = null)
     {
@@ -45,153 +72,280 @@ public sealed class OperationJournal
 
     public JournalOptions Options => _options;
 
-    public bool CanUndo => _undo.Count > 0;
-    public bool CanRedo => _redo.Count > 0;
+    public bool CanUndo
+    {
+        get
+        {
+            lock (_gate) return _undo.Count > 0;
+        }
+    }
 
-    /// <summary>Les passes annulables, la plus ancienne d'abord. Les passes fusionnées n'y sont plus.</summary>
-    public IReadOnlyList<PassInfo> History => _undo.Select(e => e.Info).ToList();
+    public bool CanRedo
+    {
+        get
+        {
+            lock (_gate) return _redo.Count > 0;
+        }
+    }
 
-    /// <summary>Passes fusionnées dans la base (§7), qui ne s'annulent plus une à une. Revenir à l'original les efface.</summary>
-    public long MergedPasses { get; private set; }
+    /// <summary>Les passes annulables, la plus ancienne d'abord. Les passes fusionnées n'y sont plus, même en cours de fusion.</summary>
+    public IReadOnlyList<PassInfo> History
+    {
+        get
+        {
+            lock (_gate) return _undo.Select(e => e.Info).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Passes fusionnées (§7), qui ne s'annulent plus une à une, y compris
+    /// celles dont la base s'écrit encore. Revenir à l'original les efface.
+    /// </summary>
+    public long MergedPasses
+    {
+        get
+        {
+            lock (_gate) return _mergedPasses;
+        }
+    }
 
     /// <summary>
     /// Le numéro de la dernière passe fusionnée, 0 sans fusion. Avec les
     /// numéros de <see cref="History"/>, il identifie l'état courant : de quoi
     /// en faire une clé de cache, même une fois toutes les passes annulables annulées.
     /// </summary>
-    public long LastMergedId => _base?.Id ?? 0;
+    public long LastMergedId
+    {
+        get
+        {
+            lock (_gate) return _lastMergedId;
+        }
+    }
 
     /// <summary>
     /// La donnée de l'app pour les passes fusionnées : la fusion de leurs
-    /// <see cref="PassInfo.AppData"/> par <see cref="JournalOptions.MergeAppData"/>.
-    /// Nulle sans passe fusionnée.
+    /// <see cref="PassInfo.AppData"/> par <see cref="JournalOptions.MergeAppData"/>,
+    /// à jour dès qu'elles quittent l'historique. Nulle sans passe fusionnée.
     /// </summary>
-    public string? MergedAppData => _base?.AppData;
+    public string? MergedAppData
+    {
+        get
+        {
+            lock (_gate) return _mergedAppData;
+        }
+    }
 
-    /// <summary>La place de la session sur le disque : l'original, la base et les segments, à rétablir compris.</summary>
-    public long DiskBytes =>
-        _buffer.Length + (_base?.DiskBytes ?? 0) + _undo.Concat(_redo).Sum(e => e.Segment.Blob.Length);
+    /// <summary>Une fusion est prévue ou en cours : des passes fusionnées sont encore des couches de l'état.</summary>
+    public bool IsMerging
+    {
+        get
+        {
+            lock (_gate) return _merging.Count > 0;
+        }
+    }
+
+    /// <summary>
+    /// L'échec de la dernière fusion, nul si elle a réussi. Après un échec,
+    /// l'état reste juste (les passes restent des couches) ; la prochaine passe
+    /// relance la fusion, et <see cref="WaitForMergesAsync"/> lève l'erreur.
+    /// </summary>
+    public Exception? MergeError
+    {
+        get
+        {
+            lock (_gate) return _mergeError;
+        }
+    }
+
+    /// <summary>
+    /// La place de la session sur le disque : l'original, la base et les
+    /// segments, à rétablir compris. Pendant une fusion, l'ancienne base et la
+    /// nouvelle comptent toutes les deux, la nouvelle à sa taille au pire.
+    /// </summary>
+    public long DiskBytes
+    {
+        get
+        {
+            lock (_gate) return _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + Segments().Sum(e => e.Segment.Blob.Length);
+        }
+    }
+
+    /// <summary>
+    /// Attend que les fusions prévues soient écrites, et les fichiers
+    /// fusionnés supprimés. Pour les tests, les bancs et un arrêt propre :
+    /// l'app n'en a pas besoin, l'état est juste à tout moment.
+    /// </summary>
+    /// <exception cref="IOException">La fusion a échoué ; l'état reste juste.</exception>
+    public async Task WaitForMergesAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            Task worker;
+            lock (_gate)
+            {
+                if (_worker is { IsCompleted: false } running)
+                {
+                    worker = running;
+                }
+                else
+                {
+                    if (_merging.Count == 0) return;
+                    if (_mergeError is { } error)
+                        throw new IOException($"La fusion de l'historique a échoué : {error.Message}", error);
+                    StartWorker();
+                    worker = _worker!;
+                }
+            }
+            await worker.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>
     /// Vérifie qu'une passe d'environ <paramref name="segmentBytes"/> octets
-    /// tient dans le budget disque, une fois appliquée : ce qui est à
-    /// rétablir aura disparu, et toutes les passes actives pourront fusionner.
-    /// Le moteur l'appelle avant de construire une passe, avec son estimation
-    /// (<see cref="DestructionEngine.EstimateSegmentBytes"/>). Sans budget, ne fait rien.
+    /// tient dans le budget disque : la session, ce qui est à rétablir en
+    /// moins, plus la passe, doit laisser la place d'écrire une base (une copie
+    /// dense au plus), pour que les fusions à venir tiennent elles aussi.
+    /// Pendant une fusion, l'ancienne base et la nouvelle comptent toutes les
+    /// deux ; si la passe ne tient qu'une fois cette fusion aboutie, on
+    /// l'attend. Le moteur l'appelle avant de construire une passe, avec son
+    /// estimation (<see cref="DestructionEngine.EstimateSegmentBytes"/>). Sans
+    /// budget, ne fait rien.
     /// </summary>
     /// <exception cref="DiskBudgetExceededException">La passe ne tiendrait pas : rien n'a été modifié.</exception>
     public void EnsureRoom(long segmentBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(segmentBytes);
-        if (_options.DiskBudgetBytes is not long budget) return;
-        // la passe, une fois appliquée, sera la dernière : toutes les autres pourront fusionner
-        List<Weight> active = [.. _undo.Select(e => Weight.Of(e.Segment)), new Weight(segmentBytes, segmentBytes, segmentBytes)];
-        if (FirstFit(active, budget) is null)
-            throw new DiskBudgetExceededException(Enumerable.Range(0, active.Count).Min(k => Predict(active, k)), budget);
+        while (true)
+        {
+            // le budget se lit hors du verrou : un budget global lit la place des autres sessions, sous leurs verrous
+            if (Budget() is not long budget) return;
+            Task running;
+            lock (_gate)
+            {
+                long needed = Usage() + segmentBytes + BaseLayer.DenseBytes(_buffer);
+                if (needed <= budget)
+                {
+                    _lastEstimate = segmentBytes;
+                    return;
+                }
+                if (_worker is not { IsCompleted: false } worker) throw new DiskBudgetExceededException(needed, budget);
+                running = worker;
+            }
+            // une fusion en cours libérera de la place en aboutissant
+            try
+            {
+                running.Wait();
+            }
+            catch (AggregateException)
+            {
+                // son échec est rangé dans MergeError ; la place, elle, n'a pas changé
+            }
+        }
     }
 
     /// <summary>
     /// Applique une passe construite sur l'état courant, lui donne son numéro
     /// et l'empile. Son segment est forcé sur le disque et rangé dans
     /// <c>segments/</c>. Ce qui était à rétablir est supprimé. Au-delà des
-    /// bornes du journal, les passes les plus anciennes fusionnent dans la base.
+    /// bornes du journal, les passes les plus anciennes quittent l'historique
+    /// et fusionnent en tâche de fond : la méthode n'attend pas la fusion.
     /// </summary>
     /// <param name="batch">La passe, construite par <see cref="FileBuffer.BeginPass"/> ou le moteur.</param>
     /// <param name="appData">Donnée opaque de l'app, rangée avec la passe.</param>
     /// <exception cref="InvalidOperationException">La passe vient d'un autre buffer, est déjà
     /// appliquée ou disposée, ou a été construite sur un autre état que l'état courant.</exception>
-    /// <exception cref="IOException">La fusion a échoué, faute de place par exemple : la passe est
-    /// abandonnée, rien n'a été modifié.</exception>
     public PassInfo Apply(DestructionBatch batch, string? appData = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
-        if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
-        if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
-        if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
-        var state = _buffer.State;
-        if (batch.BaseState.Number != state.Number)
-            throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
-
-        long id = _lastId + 1;
-        var segment = batch.Segment;
-        segment.WriteId(id);
-        segment.MovedTo(_buffer.Store.Publish(segment.Blob, $"{id:D8}.seg"));
-        var info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
-        var entry = new Entry(info, segment);
-
-        // La fusion s'écrit avant de toucher à l'état (§7, étape 1) : si elle
-        // échoue, la passe est abandonnée et rien n'a changé.
-        List<Entry> active = [.. _undo, entry];
-        int count = MergeCount(active);
-        BaseLayer? merged = null;
-        if (count > 0)
+        List<IBlob> dropped;
+        PassInfo info;
+        long? budget = Budget();
+        lock (_gate)
         {
-            try
-            {
-                merged = Merge(active.Take(count).ToList());
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                batch.Dispose();
-                throw new IOException($"La fusion de l'historique a échoué : {ex.Message} La passe est abandonnée, rien n'a été modifié.", ex);
-            }
+            if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
+            if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
+            if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
+            // une fusion qui aboutit change l'agencement de l'état, pas son numéro
+            if (batch.BaseState.Number != _buffer.State.Number)
+                throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
+
+            long id = _lastId + 1;
+            var segment = batch.Segment;
+            segment.WriteId(id);
+            segment.MovedTo(_buffer.Store.Publish(segment.Blob, $"{id:D8}.seg"));
+            info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
+            var entry = new Entry(info, segment);
+
+            int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
+            _lastId = id;
+            batch.Id = id;
+            batch.Applied = true;
+            dropped = _redo.Select(e => e.Segment.Blob).ToList();
+            _redo.Clear();
+            _undo.Add(entry);
+            _buffer.AddDiffs(segment, +1);
+            if (count > 0) Schedule(count);
+            // après un échec, chaque passe relance la fusion de ce qui attend encore
+            StartWorker();
+            Publish();
         }
 
-        _lastId = id;
-        batch.Id = id;
-        batch.Applied = true;
-        var dropped = new List<IBlob>();
-        dropped.AddRange(_redo.Select(e => e.Segment.Blob));
-        _redo.Clear();
-        _undo.Add(entry);
-        _buffer.AddDiffs(segment, +1);
-        if (merged is not null)
-        {
-            dropped.AddRange(_undo.Take(count).Select(e => e.Segment.Blob));
-            if (_base is not null) dropped.AddRange(_base.Files);
-            _undo.RemoveRange(0, count);
-            _base = merged;
-            MergedPasses += count;
-        }
-        Publish();
-
-        // ensuite seulement, ce que l'état ne référence plus (§7, étape 3)
+        // ensuite seulement, ce que l'état ne référence plus
         foreach (var blob in dropped) _buffer.Store.Delete(blob);
         return info;
     }
 
     public PassInfo? Undo()
     {
-        if (_undo.Count == 0) return null;
-        var entry = _undo[^1];
-        _undo.RemoveAt(_undo.Count - 1);
-        _redo.Add(entry);
-        _buffer.AddDiffs(entry.Segment, -1);
-        Publish();
-        return entry.Info;
+        lock (_gate)
+        {
+            if (_undo.Count == 0) return null;
+            var entry = _undo[^1];
+            _undo.RemoveAt(_undo.Count - 1);
+            _redo.Add(entry);
+            _buffer.AddDiffs(entry.Segment, -1);
+            Publish();
+            return entry.Info;
+        }
     }
 
     public PassInfo? Redo()
     {
-        if (_redo.Count == 0) return null;
-        var entry = _redo[^1];
-        _redo.RemoveAt(_redo.Count - 1);
-        _undo.Add(entry);
-        _buffer.AddDiffs(entry.Segment, +1);
-        Publish();
-        return entry.Info;
+        lock (_gate)
+        {
+            if (_redo.Count == 0) return null;
+            var entry = _redo[^1];
+            _redo.RemoveAt(_redo.Count - 1);
+            _undo.Add(entry);
+            _buffer.AddDiffs(entry.Segment, +1);
+            Publish();
+            return entry.Info;
+        }
     }
 
-    /// <summary>Revient à l'original : supprime toutes les passes, rétablir et base compris. Ne s'annule pas.</summary>
+    /// <summary>
+    /// Revient à l'original : supprime toutes les passes, rétablir et base
+    /// compris. Une fusion en cours est interrompue, et attendue : ce qu'elle
+    /// avait écrit est supprimé. Ne s'annule pas.
+    /// </summary>
     public void ResetAll()
     {
-        var files = _undo.Concat(_redo).Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
-        _undo.Clear();
-        _redo.Clear();
-        _base = null;
-        MergedPasses = 0;
-        _buffer.SetState(_buffer.Store.Source, []);
-        _buffer.ClearDiffs();
+        StopWorker();
+        List<IBlob> files;
+        lock (_gate)
+        {
+            files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            _undo.Clear();
+            _redo.Clear();
+            _merging.Clear();
+            _base = null;
+            _mergedPasses = 0;
+            _mergedAppData = null;
+            _lastMergedId = 0;
+            _mergeError = null;
+            _buffer.SetState(_buffer.Store.Source, []);
+            _buffer.ClearDiffs();
+        }
         foreach (var blob in files) _buffer.Store.Delete(blob);
     }
 
@@ -202,77 +356,287 @@ public sealed class OperationJournal
     /// </summary>
     public long ChangedBytes(long start, long length) => _buffer.ChangedBytes(start, length);
 
-    /// <summary>Les fichiers que l'état référence : base, passes actives et à rétablir. Pour les tests.</summary>
-    internal IEnumerable<IBlob> Files =>
-        _undo.Concat(_redo).Select(e => e.Segment.Blob).Concat(_base?.Files ?? []);
+    /// <summary>Interrompt la fusion en cours et l'attend : le buffer se ferme. Les passes restent des couches.</summary>
+    internal void Shutdown() => StopWorker();
 
-    /// <summary>La base, s'il y en a une. Pour les tests.</summary>
-    internal BaseLayer? Base => _base;
+    /// <summary>
+    /// Pour les tests : appelée par la tâche de fond à chaque étape d'une
+    /// fusion (« début » avant d'écrire, « écrite » avant de basculer,
+    /// « basculée » avant de supprimer ce qu'elle remplace), elle peut la
+    /// retenir, ou lever pour simuler une panne.
+    /// </summary>
+    internal Func<string, CancellationToken, Task>? MergeHook { get; set; }
 
-    /// <summary>Le nouvel état : la base au fond, éparse ou dense, puis les passes actives.</summary>
+    /// <summary>Les fichiers que l'état référence : base, passes en fusion, annulables et à rétablir. Pour les tests.</summary>
+    internal IEnumerable<IBlob> Files
+    {
+        get
+        {
+            lock (_gate) return Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+        }
+    }
+
+    /// <summary>
+    /// La base, l'état, les fichiers référencés et la place comptée, pris
+    /// ensemble sous le verrou : une fusion qui aboutit ne peut pas passer
+    /// entre deux. Pour les tests.
+    /// </summary>
+    internal JournalSnapshot Snapshot()
+    {
+        lock (_gate)
+        {
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            long disk = _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + Segments().Sum(e => e.Segment.Blob.Length);
+            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0, _reserved, disk);
+        }
+    }
+
+    /// <summary>La base écrite, s'il y en a une. Pour les tests.</summary>
+    internal BaseLayer? Base
+    {
+        get
+        {
+            lock (_gate) return _base;
+        }
+    }
+
+    private IEnumerable<Entry> Segments() => _merging.Concat(_undo).Concat(_redo);
+
+    // ---------- l'état ----------
+
+    /// <summary>Le nouvel état : la base au fond, éparse ou dense, puis les passes en fusion, puis les annulables.</summary>
     private void Publish()
     {
-        var layers = _undo.Select(e => e.Segment);
-        if (_base?.Sparse is { } sparse) layers = layers.Prepend(sparse);
-        _buffer.SetState(_base?.Dense ?? _buffer.Store.Source, layers.ToArray());
+        var (bottom, layers) = Layout();
+        _buffer.SetState(bottom, layers);
+    }
+
+    private (IBlob Bottom, Segment[] Layers) Layout()
+    {
+        var segments = _merging.Concat(_undo).Select(e => e.Segment);
+        if (_base?.Sparse is { } sparse) segments = segments.Prepend(sparse);
+        return (_base?.Dense ?? _buffer.Store.Source, segments.ToArray());
     }
 
     /// <summary>
-    /// Combien des passes actives, les plus anciennes, doivent fusionner : ce
-    /// qui dépasse <see cref="JournalOptions.MaxUndoSteps"/>, et au-delà du
-    /// budget disque, le moins qui y ramène, au pire toutes sauf la dernière.
+    /// Les <paramref name="count"/> passes les plus anciennes quittent
+    /// l'historique : elles sont fusionnées pour l'app dès maintenant, et la
+    /// tâche de fond écrira leur base.
     /// </summary>
-    private int MergeCount(List<Entry> active)
+    private void Schedule(int count)
     {
-        int count = Math.Max(0, active.Count - _options.MaxUndoSteps);
-        if (_options.DiskBudgetBytes is not long budget) return count;
-        return FirstFit(active.Select(e => Weight.Of(e.Segment)).ToList(), budget) ?? Math.Max(count, active.Count - 1);
-    }
-
-    /// <summary>
-    /// Le plus petit nombre de passes à fusionner, parmi
-    /// <paramref name="active"/> (la dernière ne fusionne jamais), pour que
-    /// la session tienne dans <paramref name="budget"/> ; null si aucun.
-    /// </summary>
-    private int? FirstFit(List<Weight> active, long budget)
-    {
-        for (int count = Math.Max(0, active.Count - _options.MaxUndoSteps); count < Math.Max(1, active.Count); count++)
-            if (Predict(active, count) <= budget) return count;
-        return null;
-    }
-
-    /// <summary>
-    /// La place de la session, au pire, une fois les <paramref name="count"/>
-    /// plus anciennes de <paramref name="active"/> fusionnées. Une base qui
-    /// pourrait couvrir la moitié du fichier (écarts comblés compris, 11
-    /// octets au plus par plage) est comptée dense ; sinon, la somme de ce
-    /// qu'elle fusionne, qui ne peut que se recouvrir.
-    /// </summary>
-    private long Predict(List<Weight> active, int count)
-    {
-        long dense = BaseLayer.DenseBytes(_buffer);
-        var old = _base is null ? new Weight(0, 0, 0)
-            : _base.IsDense ? new Weight(_base.DiskBytes, _buffer.Length, 0)
-            : Weight.Of(_base.Sparse!);
-        long bytes = old.Bytes, data = old.Data, runs = old.Runs, rest = 0;
-        for (int i = 0; i < active.Count; i++)
+        var entries = _undo.GetRange(0, count);
+        _undo.RemoveRange(0, count);
+        if (_options.MergeAppData is { } merge)
         {
-            if (i < count)
+            var data = new List<string?>();
+            if (_mergedPasses > 0) data.Add(_mergedAppData);
+            data.AddRange(entries.Select(e => e.Info.AppData));
+            _mergedAppData = merge(data);
+        }
+        _merging.AddRange(entries);
+        _mergedPasses += count;
+        _lastMergedId = entries[^1].Info.Id;
+        StartWorker();
+    }
+
+    // ---------- la tâche de fond ----------
+
+    private void StartWorker()
+    {
+        if (_worker is { IsCompleted: false } || _merging.Count == 0) return;
+        _mergeError = null;
+        var token = _cancel.Token;
+        _worker = Task.Factory.StartNew(() => MergeLoop(token), CancellationToken.None,
+                                        TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+
+    private void StopWorker()
+    {
+        Task? worker;
+        lock (_gate)
+        {
+            _cancel.Cancel();
+            worker = _worker;
+        }
+        try
+        {
+            worker?.Wait();
+        }
+        catch (AggregateException)
+        {
+            // la tâche de fond range ses erreurs dans _mergeError ; rien d'autre à attendre
+        }
+        lock (_gate)
+        {
+            _worker = null;
+            _cancel.Dispose();
+            _cancel = new CancellationTokenSource();
+        }
+    }
+
+    /// <summary>
+    /// Fusionne, une fusion à la fois, tout ce qui attend : écrit la base à
+    /// côté (§7, étape 1), bascule l'agencement de l'état sous le verrou, puis
+    /// supprime l'ancienne base et les segments fusionnés (étape 3). En cas
+    /// d'échec, les fichiers à moitié écrits sont supprimés, l'état ne change
+    /// pas et l'erreur est rangée.
+    /// </summary>
+    private void MergeLoop(CancellationToken ct)
+    {
+        Background.LowerPriority();
+        while (true)
+        {
+            BaseLayer? old;
+            List<Entry> job;
+            string? appData;
+            lock (_gate)
             {
-                bytes += active[i].Bytes;
-                data += active[i].Data;
-                runs += active[i].Runs;
+                if (_merging.Count == 0 || ct.IsCancellationRequested) return;
+                old = _base;
+                job = _merging.ToList();
+                _jobCount = job.Count;
+                _reserved = Bound(old is null ? null : WeightOf(old), job.Select(e => Weight.Of(e.Segment)));
+                // la fusion prend tout ce qui attend : sa base porte les AppData de toutes les passes fusionnées
+                appData = _mergedAppData;
             }
-            else
+
+            BaseLayer merged;
+            try
             {
-                rest += active[i].Bytes;
+                Step("début", ct);
+                merged = BaseLayer.Merge(_buffer, old, job.Select(e => e.Segment).ToList(), job[^1].Info.Id, appData, ct);
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    _reserved = 0;
+                    _jobCount = 0;
+                    if (!ct.IsCancellationRequested) _mergeError = ex;
+                }
+                return;
+            }
+
+            List<IBlob> dropped;
+            try
+            {
+                Step("écrite", ct);
+            }
+            catch (Exception ex)
+            {
+                // interrompue entre l'écriture et la bascule : la base écrite ne sert plus
+                lock (_gate)
+                {
+                    _reserved = 0;
+                    _jobCount = 0;
+                    if (!ct.IsCancellationRequested) _mergeError = ex;
+                }
+                foreach (var blob in merged.Files) _buffer.Store.Delete(blob);
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    dropped = merged.Files.ToList();
+                }
+                else
+                {
+                    dropped = job.Select(e => e.Segment.Blob).Concat(old?.Files ?? []).ToList();
+                    _merging.RemoveRange(0, job.Count);
+                    _base = merged;
+                    var (bottom, layers) = Layout();
+                    _buffer.Relayout(bottom, layers);
+                }
+                _reserved = 0;
+                _jobCount = 0;
+            }
+            try
+            {
+                Step("basculée", ct);
+            }
+            catch (OperationCanceledException)
+            {
+                // interrompue après la bascule : il reste à supprimer ce qu'elle a remplacé
+            }
+            finally
+            {
+                foreach (var blob in dropped) _buffer.Store.Delete(blob);
             }
         }
-        long merged = count == 0 ? old.Bytes
-            : (data + (SegmentFormat.RunHeaderSize - 1) * runs) * 2 >= _buffer.Length ? dense
-            : Math.Min(bytes, dense);
-        return _buffer.Length + merged + rest;
     }
+
+    private void Step(string step, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (MergeHook is { } hook) hook(step, ct).GetAwaiter().GetResult();
+        ct.ThrowIfCancellationRequested();
+    }
+
+    // ---------- budget ----------
+
+    /// <summary>
+    /// Combien des passes annulables, les plus anciennes, doivent fusionner
+    /// après une passe : ce qui dépasse <see cref="JournalOptions.MaxUndoSteps"/>,
+    /// et, sous budget, assez pour qu'une fois les fusions faites il reste la
+    /// place d'une autre passe comme celle-ci et d'une base à réécrire. Au
+    /// pire, toutes sauf la dernière.
+    /// </summary>
+    private int MergeCount(List<Weight> active, long? limit)
+    {
+        int count = Math.Max(0, active.Count - _options.MaxUndoSteps);
+        if (limit is not long budget) return count;
+        // une autre passe comme celle-ci, comptée comme EnsureRoom l'a comptée avant de la construire
+        long margin = BaseLayer.DenseBytes(_buffer) + Math.Max(active[^1].Bytes, _lastEstimate);
+        if (Usage() - _undo.Sum(e => e.Segment.Blob.Length) + active.Sum(w => w.Bytes) + margin <= budget) return count;
+        for (int k = count; k < active.Count - 1; k++)
+            if (Steady(active, k) + margin <= budget) return k;
+        return Math.Max(count, active.Count - 1);
+    }
+
+    /// <summary>Le budget du moment : celui qui change, s'il y en a un, sinon le budget fixe, sinon aucun.</summary>
+    private long? Budget() => _options.DiskBudget is { } budget ? budget() : _options.DiskBudgetBytes;
+
+    /// <summary>La place de la session sur le disque, sans ce qui est à rétablir : l'original, la base, la base en cours d'écriture, les segments en fusion et annulables.</summary>
+    private long Usage() =>
+        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _merging.Concat(_undo).Sum(e => e.Segment.Blob.Length);
+
+    /// <summary>La place de la session, au pire, une fois écrite la base qui fusionne tout ce qui attend et les <paramref name="count"/> plus anciennes de <paramref name="active"/>.</summary>
+    private long Steady(List<Weight> active, int count) =>
+        _buffer.Length + NextBase(active, count) + active.Skip(count).Sum(w => w.Bytes);
+
+    /// <summary>La base, au pire, une fois fusionnés tout ce qui attend et les <paramref name="count"/> plus anciennes de <paramref name="active"/>.</summary>
+    private long NextBase(List<Weight> active, int count)
+    {
+        var pending = _merging.Select(e => Weight.Of(e.Segment)).Concat(active.Take(count)).ToList();
+        var old = _base is null ? (Weight?)null : WeightOf(_base);
+        return pending.Count == 0 ? old?.Bytes ?? 0 : Bound(old, pending);
+    }
+
+    /// <summary>
+    /// La place, au pire, d'une base qui fusionne <paramref name="old"/> et
+    /// <paramref name="passes"/>. Une base qui pourrait couvrir la moitié du
+    /// fichier (écarts comblés compris, 11 octets au plus par plage) est
+    /// comptée dense ; sinon, la somme de ce qu'elle fusionne, qui ne peut que
+    /// se recouvrir.
+    /// </summary>
+    private long Bound(Weight? old, IEnumerable<Weight> passes)
+    {
+        long dense = BaseLayer.DenseBytes(_buffer);
+        long bytes = old?.Bytes ?? 0, data = old?.Data ?? 0, runs = old?.Runs ?? 0;
+        foreach (var w in passes)
+        {
+            bytes += w.Bytes;
+            data += w.Data;
+            runs += w.Runs;
+        }
+        return (data + (SegmentFormat.RunHeaderSize - 1) * runs) * 2 >= _buffer.Length ? dense : Math.Min(bytes, dense);
+    }
+
+    private Weight WeightOf(BaseLayer layer) =>
+        layer.IsDense ? new Weight(layer.DiskBytes, _buffer.Length, 0) : Weight.Of(layer.Sparse!);
 
     /// <summary>Ce qu'une passe pèse pour le budget : sa place, ses octets écrits, ses plages.</summary>
     private readonly record struct Weight(long Bytes, long Data, long Runs)
@@ -280,18 +644,43 @@ public sealed class OperationJournal
         public static Weight Of(Segment segment) => new(segment.Blob.Length, segment.DataBytes, segment.RunCount);
     }
 
-    private BaseLayer Merge(List<Entry> entries)
+    private sealed record Entry(PassInfo Info, Segment Segment);
+}
+
+/// <summary>Le journal vu d'un coup, pour les tests (<see cref="OperationJournal.Snapshot"/>).</summary>
+internal sealed record JournalSnapshot(BaseLayer? Base, BufferState State, IReadOnlyList<IBlob> Files, bool Merging,
+                                       long ReservedBytes, long DiskBytes);
+
+/// <summary>
+/// La tâche de fond passe après l'app : son fil a une priorité basse, et sous
+/// macOS ses lectures et écritures disque aussi (<c>setiopolicy_np</c>,
+/// <c>IOPOL_UTILITY</c>). Une fusion plus lente gêne moins la passe suivante,
+/// et en regroupe davantage.
+/// </summary>
+internal static class Background
+{
+    private const int DiskIo = 0;        // IOPOL_TYPE_DISK
+    private const int ThisThread = 1;    // IOPOL_SCOPE_THREAD
+    private const int Utility = 4;       // IOPOL_UTILITY
+
+    /// <summary>Faux pour mesurer l'effet de la priorité basse : le banc la compare à la priorité normale.</summary>
+    internal static bool Enabled { get; set; } = Environment.GetEnvironmentVariable("DGC_MERGE_PRIORITY") != "normale";
+
+    public static void LowerPriority()
     {
-        string? appData = null;
-        if (_options.MergeAppData is { } merge)
+        if (!Enabled) return;
+        Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+        if (!OperatingSystem.IsMacOS()) return;
+        try
         {
-            var data = new List<string?>();
-            if (_base is not null) data.Add(_base.AppData);
-            data.AddRange(entries.Select(e => e.Info.AppData));
-            appData = merge(data);
+            setiopolicy_np(DiskIo, ThisThread, Utility);
         }
-        return BaseLayer.Merge(_buffer, _base, entries.Select(e => e.Segment).ToList(), entries[^1].Info.Id, appData);
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            // sans politique d'E/S, la fusion garde la priorité normale
+        }
     }
 
-    private sealed record Entry(PassInfo Info, Segment Segment);
+    [System.Runtime.InteropServices.DllImport("libc")]
+    private static extern int setiopolicy_np(int type, int scope, int policy);
 }

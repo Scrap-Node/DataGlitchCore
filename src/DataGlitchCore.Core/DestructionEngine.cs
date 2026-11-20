@@ -324,9 +324,8 @@ public static class DestructionEngine
     private sealed class PassReader(FileBuffer buffer, BufferState state, int size) : IDisposable
     {
         private readonly IBlob _original = buffer.Store.Source;
-        private readonly IBlob _bottom = state.Bottom;
-        private readonly Segment[] _layers = state.Layers;
         private readonly long _length = buffer.Length;
+        private BufferState _state = state;
         private Window _current = new(size);
         private Window _previous = new(size);
 
@@ -336,7 +335,21 @@ public static class DestructionEngine
             if (!_current.Contains(offset, before.Length))
             {
                 (_previous, _current) = (_current, _previous);
-                _current.Load(_original, _bottom, _layers, offset, (int)Math.Min(size, _length - offset));
+                int count = (int)Math.Min(size, _length - offset);
+                while (true)
+                {
+                    try
+                    {
+                        _current.Load(_original, _state.Bottom, _state.Layers, offset, count);
+                        break;
+                    }
+                    catch (Exception ex) when (FileBuffer.Gone(ex) && buffer.NewerLayout(_state) is { } newer)
+                    {
+                        // une fusion en tâche de fond a remplacé des fichiers de
+                        // l'état d'avant : le même état, autrement agencé (§7)
+                        _state = newer;
+                    }
+                }
             }
             _current.Copy(offset, before, original);
         }
@@ -346,7 +359,21 @@ public static class DestructionEngine
         {
             if (_current.Contains(offset, destination.Length)) _current.Copy(offset, destination, default);
             else if (_previous.Contains(offset, destination.Length)) _previous.Copy(offset, destination, default);
-            else LayeredSource.ReadLayers(_bottom, _layers, offset, destination);
+            else
+            {
+                while (true)
+                {
+                    try
+                    {
+                        LayeredSource.ReadLayers(_state.Bottom, _state.Layers, offset, destination);
+                        return;
+                    }
+                    catch (Exception ex) when (FileBuffer.Gone(ex) && buffer.NewerLayout(_state) is { } newer)
+                    {
+                        _state = newer;
+                    }
+                }
+            }
         }
 
         public void Dispose()

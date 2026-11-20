@@ -65,7 +65,8 @@ internal sealed class BaseLayer
     /// La base devient dense dès qu'elle couvre la moitié du fichier, ou
     /// qu'éparse, elle prendrait plus de place que dense.
     /// </summary>
-    public static BaseLayer Merge(FileBuffer buffer, BaseLayer? previous, IReadOnlyList<Segment> passes, long id, string? appData)
+    public static BaseLayer Merge(FileBuffer buffer, BaseLayer? previous, IReadOnlyList<Segment> passes, long id, string? appData,
+                                  CancellationToken ct = default)
     {
         var store = buffer.Store;
         var written = new List<IBlob>();
@@ -76,7 +77,7 @@ internal sealed class BaseLayer
                 // déjà dense : un clone de l'ancienne base, et les passes recopiées par-dessus
                 var diffs = (int[])previous.DenseDiffs!.Clone();
                 foreach (var pass in passes) AddDiffs(diffs, pass);
-                var dense = WriteDense(buffer, previous.Dense!, passes, id, written);
+                var dense = WriteDense(buffer, previous.Dense!, passes, id, written, ct);
                 var diffFile = WriteDiffFile(buffer, diffs, id, written);
                 return new BaseLayer(id, appData, null, dense, diffFile, diffs);
             }
@@ -84,7 +85,7 @@ internal sealed class BaseLayer
             IReadOnlyList<Segment> layers = previous?.Sparse is { } old ? [old, .. passes] : passes;
             var tmp = store.CreateTemp($"base-{id:D8}.seg");
             written.Add(tmp);
-            var sparse = WriteSparse(buffer, layers, tmp);
+            var sparse = WriteSparse(buffer, layers, tmp, ct);
             if (sparse.DataBytes * 2 < buffer.Length && tmp.Length <= DenseBytes(buffer))
             {
                 sparse.WriteId(id);
@@ -95,7 +96,7 @@ internal sealed class BaseLayer
             // la moitié du fichier est couverte : l'original cloné, la base éparse recopiée par-dessus
             var counters = new int[ChunkCount(buffer)];
             AddDiffs(counters, sparse);
-            var full = WriteDense(buffer, store.Source, [sparse], id, written);
+            var full = WriteDense(buffer, store.Source, [sparse], id, written, ct);
             var counterFile = WriteDiffFile(buffer, counters, id, written);
             store.Delete(tmp);
             written.Remove(tmp);
@@ -129,7 +130,7 @@ internal sealed class BaseLayer
     /// de l'original, ce qui borne la base éparse à la taille du fichier.
     /// Les compteurs s'additionnent.
     /// </summary>
-    private static Segment WriteSparse(FileBuffer buffer, IReadOnlyList<Segment> layers, IBlob blob)
+    private static Segment WriteSparse(FileBuffer buffer, IReadOnlyList<Segment> layers, IBlob blob, CancellationToken ct)
     {
         int shift = buffer.Options.ChunkShift;
         var writer = new SegmentWriter(blob, shift, buffer.Options.PassBufferBytes);
@@ -146,6 +147,7 @@ internal sealed class BaseLayer
             for (long c = first; c <= last; c++)
             {
                 if (!Touched(layers, c)) continue;
+                ct.ThrowIfCancellationRequested();
                 long at = c << shift;
                 int n = (int)Math.Min(1L << shift, buffer.Length - at);
                 var bytes = window.AsSpan(0, n);
@@ -225,7 +227,8 @@ internal sealed class BaseLayer
     /// le cache disque est propre à chaque fichier, et le clone, neuf, n'y est
     /// pas, alors que la construction de la passe vient de lire le fond.
     /// </summary>
-    private static IBlob WriteDense(FileBuffer buffer, IBlob bottom, IReadOnlyList<Segment> segments, long id, List<IBlob> written)
+    private static IBlob WriteDense(FileBuffer buffer, IBlob bottom, IReadOnlyList<Segment> segments, long id, List<IBlob> written,
+                                    CancellationToken ct)
     {
         var store = buffer.Store;
         var blob = store.CreateTempCopy(bottom, $"base-{id:D8}.dense");
@@ -238,6 +241,7 @@ internal sealed class BaseLayer
             for (long c = first; c <= last; c++)
             {
                 if (!Touched(segments, c)) continue;
+                ct.ThrowIfCancellationRequested();
                 long at = c << shift;
                 var bytes = window.AsSpan(0, (int)Math.Min(1L << shift, buffer.Length - at));
                 bottom.Read(at, bytes);

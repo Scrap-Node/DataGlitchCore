@@ -16,6 +16,12 @@ namespace DataGlitchCore.Core.Tests;
 /// restent dans l'historique de la référence, qui n'en a pas : celui du cœur
 /// doit en être la fin, et la base, éparse ou dense, rendre les mêmes octets.
 ///
+/// La fusion tourne en tâche de fond (D14), selon l'un de trois modes tirés
+/// par suite : attendue après chaque passe ; libre, en parallèle des
+/// opérations et des lectures ; ou retenue au début ou juste avant la bascule,
+/// et relâchée à un pas tiré lui aussi. Les octets, l'historique et les
+/// compteurs doivent rester ceux de la référence à chaque pas.
+///
 /// Le cœur y tourne en mémoire ou sur de vrais fichiers, avec des tranches,
 /// des fenêtres et un plafond de passe réduits à quelques Kio, pour forcer
 /// tous les chemins : lectures à cheval sur les tranches, passes vidées sur
@@ -53,7 +59,7 @@ public sealed class OracleTests
     [Fact]
     public void The_Random_Sequences_Reach_Every_Kind_Of_Merge()
     {
-        int sparse = 0, dense = 0, fromSparseToDense = 0, refused = 0, files = 0;
+        int sparse = 0, dense = 0, fromSparseToDense = 0, refused = 0, files = 0, held = 0, resets = 0, built = 0;
         for (int seed = 0; seed < DefaultSeeds; seed++)
         {
             var scenario = new OracleScenario(seed);
@@ -63,12 +69,18 @@ public sealed class OracleTests
             fromSparseToDense += scenario.SparseToDense;
             refused += scenario.Refused;
             files += scenario.MergesOnFiles;
+            held += scenario.HeldChecks;
+            resets += scenario.ResetsDuringMerge;
+            built += scenario.PassesBuiltDuringMerge;
         }
         Assert.True(sparse > 20, $"{sparse} fusions éparses");
         Assert.True(dense > 20, $"{dense} fusions denses");
         Assert.True(fromSparseToDense > 5, $"{fromSparseToDense} bases devenues denses");
         Assert.True(refused > 2, $"{refused} passes refusées par le budget");
         Assert.True(files > 5, $"{files} fusions sur de vrais fichiers");
+        Assert.True(held > 20, $"{held} vérifications pendant une fusion retenue");
+        Assert.True(resets >= 3, $"{resets} retours à l'original pendant une fusion");
+        Assert.True(built >= 10, $"{built} passes construites pendant une fusion");
     }
 
     [Theory]
@@ -132,7 +144,17 @@ internal sealed class OracleScenario(int seed)
     private readonly List<string?> _redoData = new();
     private int _dataCounter;
 
+    private enum MergeMode { Attendue, Libre, Retenue }
+
+    private MergeMode _mode;
+    private string _holdStep = "début";
+    private readonly SemaphoreSlim _release = new(0);
+    private volatile bool _held;
+
     public int SparseMerges { get; private set; }
+    public int HeldChecks { get; private set; }
+    public int ResetsDuringMerge { get; private set; }
+    public int PassesBuiltDuringMerge { get; private set; }
     public int DenseMerges { get; private set; }
     public int SparseToDense { get; private set; }
     public int Refused { get; private set; }
@@ -177,16 +199,23 @@ internal sealed class OracleScenario(int seed)
     private void RunSteps(byte[] data)
     {
         int[] maxSteps = [1, 2, 3, 5, 20];
-        long? budget = _rng.Next(4) == 0 ? data.Length + (long)(_rng.NextDouble() * 2 * data.Length) + _rng.Next(0, 20_000) : null;
+        // l'original, la place de réécrire une base, et de quoi tenir quelques passes, parfois pas
+        long? budget = _rng.Next(4) == 0 ? 2 * data.Length + (long)(_rng.NextDouble() * 2 * data.Length) + _rng.Next(0, 20_000) : null;
         _journalOptions = new JournalOptions
         {
             MaxUndoSteps = maxSteps[_rng.Next(maxSteps.Length)],
             DiskBudgetBytes = budget,
             MergeAppData = _rng.Next(3) == 0 ? null : MergeData,
         };
+        _mode = (MergeMode)_rng.Next(3);
+        _holdStep = _rng.Next(2) == 0 ? "début" : "écrite";
+        // une passe sous budget peut attendre la fin d'une fusion : retenue par l'oracle, elle ne viendrait jamais
+        if (_mode == MergeMode.Retenue && budget is not null) _mode = MergeMode.Libre;
         _log.Add($"historique de {_journalOptions.MaxUndoSteps} passes, budget {budget?.ToString() ?? "aucun"}, " +
-                 $"{(_journalOptions.MergeAppData is null ? "sans" : "avec")} fusion des AppData");
+                 $"{(_journalOptions.MergeAppData is null ? "sans" : "avec")} fusion des AppData, fusion {_mode.ToString().ToLowerInvariant()}" +
+                 (_mode == MergeMode.Retenue ? $" à l'étape « {_holdStep} »" : ""));
         _journal = new OperationJournal(_buffer, _journalOptions);
+        if (_mode == MergeMode.Retenue) _journal.MergeHook = HoldAsync;
         _ref = ReferenceFileBuffer.FromBytes("oracle.bin", (byte[])data.Clone());
         _refJournal = new ReferenceOperationJournal(_ref);
 
@@ -199,12 +228,13 @@ internal sealed class OracleScenario(int seed)
             int s = step;
             Guard(s, () =>
             {
-                int r = _rng.Next(100);
+                int r = _rng.Next(110);
                 if (r < 50) Pass(large);
                 else if (r < 60) PostProcessedPass(large);
                 else if (r < 75) Undo();
                 else if (r < 90) Redo();
-                else Reset();
+                else if (r < 100) Reset();
+                else Release();
                 Check();
             });
         }
@@ -215,6 +245,7 @@ internal sealed class OracleScenario(int seed)
     private void Pass(bool large)
     {
         var options = RandomOptions(large);
+        if (_journal.IsMerging) PassesBuiltDuringMerge++;
         if (!TryBuild(options, out var prod, out var reference, out string mask)) return;
         _log.Add($"passe {Describe(options)}, masque {mask} : {reference.EditCount} écritures");
         AssertSameBatch(reference, prod);
@@ -256,7 +287,6 @@ internal sealed class OracleScenario(int seed)
     {
         string? data = _rng.Next(4) == 0 ? null : $"a{++_dataCounter}";
         long mergedBefore = _journal.MergedPasses;
-        bool wasSparse = _journal.Base is { IsDense: false };
         int expected = (int)mergedBefore + Math.Max(0, _journal.History.Count + 1 - _journalOptions.MaxUndoSteps);
 
         var info = _journal.Apply(prod, data);
@@ -264,26 +294,24 @@ internal sealed class OracleScenario(int seed)
         _undoData.Add(data);
         _redoData.Clear();
 
-        if (_journalOptions.DiskBudgetBytes is long budget)
+        // l'historique est fusionné dès Apply, quel que soit le sort de la fusion en tâche de fond
+        if (_journalOptions.DiskBudgetBytes is null) Assert.Equal(expected, _journal.MergedPasses);
+        else Assert.True(_journal.MergedPasses >= expected);
+
+        bool settled = _mode == MergeMode.Attendue || (_mode == MergeMode.Libre && _rng.Next(2) == 0);
+        if (settled) WaitForMerges();
+        if (settled && _journalOptions.DiskBudgetBytes is long budget)
         {
-            Assert.True(_journal.MergedPasses >= expected);
             long chunks = (_buffer.Length >> _buffer.Options.ChunkShift) + 1;
             Assert.True(_journal.DiskBytes <= budget + 12 * chunks + 256 || _journal.History.Count == 1,
                 $"{_journal.DiskBytes} o sur le disque pour un budget de {budget}, avec {_journal.History.Count} passes annulables");
         }
-        else
-        {
-            Assert.Equal(expected, _journal.MergedPasses);
-        }
         if (_journal.MergedPasses > mergedBefore)
         {
-            if (_journal.Base!.IsDense) DenseMerges++;
-            else SparseMerges++;
-            if (wasSparse && _journal.Base.IsDense) SparseToDense++;
-            if (_directory is not null) MergesOnFiles++;
+            var snapshot = _journal.Snapshot();
+            string state = snapshot.Merging ? "en cours" : snapshot.Base!.IsDense ? "base dense" : "base éparse";
+            _log.Add($"fusion de {_journal.MergedPasses - mergedBefore} passes : {state}, {snapshot.DiskBytes} o comptés sur le disque");
         }
-        if (_journal.MergedPasses > mergedBefore)
-            _log.Add($"fusion de {_journal.MergedPasses - mergedBefore} passes : base {(_journal.Base!.IsDense ? "dense" : "éparse")}, {_journal.DiskBytes} o sur le disque");
         return info;
     }
 
@@ -379,13 +407,51 @@ internal sealed class OracleScenario(int seed)
 
     private void Reset()
     {
-        _log.Add("retour à l'original");
+        if (_journal.IsMerging) ResetsDuringMerge++;
+        _log.Add($"retour à l'original{(_journal.IsMerging ? ", une fusion en cours" : "")}");
         _refJournal.ResetAll();
         _journal.ResetAll();
         _undoData.Clear();
         _redoData.Clear();
         Assert.Equal(0, _journal.MergedPasses);
         Assert.Null(_journal.MergedAppData);
+    }
+
+    /// <summary>Relâche une fusion retenue, ou, en mode libre, attend celles en cours.</summary>
+    private void Release()
+    {
+        switch (_mode)
+        {
+            case MergeMode.Retenue:
+                _log.Add($"relâcher une fusion{(_held ? " retenue" : "")}");
+                _release.Release();
+                break;
+            case MergeMode.Libre:
+                _log.Add("attendre les fusions");
+                WaitForMerges();
+                break;
+        }
+    }
+
+    /// <summary>Le crochet du mode retenu : la fusion s'arrête à son étape, jusqu'à ce qu'un pas la relâche, ou qu'un retour l'interrompe.</summary>
+    private async Task HoldAsync(string step, CancellationToken ct)
+    {
+        if (step != _holdStep) return;
+        _held = true;
+        try
+        {
+            await _release.WaitAsync(ct);
+        }
+        finally
+        {
+            _held = false;
+        }
+    }
+
+    private void WaitForMerges()
+    {
+        if (!_journal.WaitForMergesAsync().Wait(TimeSpan.FromSeconds(60)))
+            throw new XunitException("Les fusions ne finissent pas.");
     }
 
     // ---------- vérifications ----------
@@ -433,9 +499,16 @@ internal sealed class OracleScenario(int seed)
     /// </summary>
     private void CheckDisk()
     {
-        // ce qu'une réouverture rechargerait (lot 5) : les compteurs de la base et des passes actives
+        // pendant une fusion libre, rien n'est stable sur le disque : on regarde
+        // l'instantané du journal, et le disque seulement une fois les fusions finies
+        if (_mode == MergeMode.Libre && _journal.IsMerging && _rng.Next(2) == 0) WaitForMerges();
+        var snapshot = _journal.Snapshot();
+        if (snapshot.Merging && _held) HeldChecks++;
+        CountBase(snapshot);
+
+        // ce qu'une réouverture rechargerait (lot 5) : les compteurs de la base et des passes, en fusion comprises
         var counters = new long[_buffer.ChangedPerChunk.Length];
-        if (_journal.Base is { } merged)
+        if (snapshot.Base is { } merged)
         {
             if (merged.IsDense)
             {
@@ -448,26 +521,61 @@ internal sealed class OracleScenario(int seed)
                 for (long c = merged.Sparse.FirstChunk; c <= merged.Sparse.LastChunk; c++) counters[c] += merged.Sparse.DiffAt(c);
             }
         }
-        foreach (var segment in _buffer.State.Layers.Skip(_journal.Base?.Sparse is null ? 0 : 1))
+        foreach (var segment in snapshot.State.Layers.Skip(snapshot.Base?.Sparse is null ? 0 : 1))
             for (long c = segment.FirstChunk; c <= segment.LastChunk; c++) counters[c] += segment.DiffAt(c);
         Assert.Equal(_buffer.ChangedPerChunk.ToArray().Select(c => (long)c), counters);
 
-        var expected = _journal.Files.Select(f => f.Name).Order().ToList();
-        var baseBytes = _journal.Base?.DiskBytes ?? 0;
+        var baseBytes = snapshot.Base?.DiskBytes ?? 0;
         Assert.True(baseBytes <= BaseLayer.DenseBytes(_buffer), $"base de {baseBytes} o pour un fichier de {_buffer.Length} o");
-        Assert.Equal(_buffer.Length + _journal.Files.Sum(f => f.Length), _journal.DiskBytes);
+        Assert.Equal(_buffer.Length + snapshot.ReservedBytes + snapshot.Files.Sum(f => f.Length), snapshot.DiskBytes);
+        if (!snapshot.Merging) Assert.Equal(0, snapshot.ReservedBytes); // la nouvelle base n'est comptée que pendant sa fusion
+
+        // le disque : exact une fois les fusions finies ; retenue, la fusion laisse au plus sa base en cours
+        bool stable = !snapshot.Merging || _held;
+        if (!stable) return;
+        var expected = snapshot.Files.Select(f => f.Name).Order().ToList();
+        List<string> present, temporary;
         if (_directory is not null)
         {
-            Assert.Empty(Directory.GetFiles(Path.Combine(_directory, "tmp"))); // pas de passe abandonnée qui traîne
-            var files = new DirectoryInfo(Path.Combine(_directory, "segments")).GetFiles();
-            Assert.Equal(expected, files.Select(f => "segments/" + f.Name).Order().ToList());
-            Assert.Equal(_journal.DiskBytes - _buffer.Length, files.Sum(f => f.Length));
+            temporary = Directory.GetFiles(Path.Combine(_directory, "tmp")).Select(f => "tmp/" + Path.GetFileName(f)).ToList();
+            present = Directory.GetFiles(Path.Combine(_directory, "segments")).Select(f => "segments/" + Path.GetFileName(f)).ToList();
         }
         else
         {
-            Assert.Equal(expected, ((MemoryBlobStore)_buffer.Store).Names.Order().ToList());
+            var names = ((MemoryBlobStore)_buffer.Store).Names;
+            temporary = names.Where(n => n.StartsWith("tmp/", StringComparison.Ordinal)).ToList();
+            present = names.Where(n => n.StartsWith("segments/", StringComparison.Ordinal)).ToList();
+        }
+        if (!snapshot.Merging)
+        {
+            Assert.Empty(temporary); // pas de passe abandonnée ni de base à moitié écrite qui traîne
+            Assert.Equal(expected, present.Order().ToList());
+            if (_directory is not null)
+                Assert.Equal(snapshot.DiskBytes - _buffer.Length,
+                             new DirectoryInfo(Path.Combine(_directory, "segments")).GetFiles().Sum(f => f.Length));
+        }
+        else
+        {
+            // retenue au début, rien n'est écrit ; juste avant la bascule, la nouvelle base est rangée, pas encore référencée
+            Assert.All(temporary, n => Assert.StartsWith("tmp/base-", n));
+            Assert.Subset(present.ToHashSet(), expected.ToHashSet());
+            Assert.All(present.Except(expected), n => Assert.StartsWith("segments/base-", n));
+            if (_holdStep == "début") Assert.Empty(present.Except(expected));
         }
     }
+
+    /// <summary>Compte les bases écrites, une fois chacune, et leurs passages en dense : la couverture de l'oracle.</summary>
+    private void CountBase(JournalSnapshot snapshot)
+    {
+        if (snapshot.Base is not { } current || ReferenceEquals(current, _lastBase)) return;
+        if (current.IsDense) DenseMerges++;
+        else SparseMerges++;
+        if (_lastBase is { IsDense: false } && current.IsDense) SparseToDense++;
+        if (_directory is not null) MergesOnFiles++;
+        _lastBase = current;
+    }
+
+    private BaseLayer? _lastBase;
 
     /// <summary>Les compteurs du journal contre une comparaison naïve, sur des plages quelconques.</summary>
     private void CheckChangedBytes()
