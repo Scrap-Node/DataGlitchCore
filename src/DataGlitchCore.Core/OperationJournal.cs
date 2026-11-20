@@ -215,9 +215,10 @@ public sealed class OperationJournal
     public void EnsureRoom(long segmentBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(segmentBytes);
-        if (_options.DiskBudgetBytes is not long budget) return;
         while (true)
         {
+            // le budget se lit hors du verrou : un budget global lit la place des autres sessions, sous leurs verrous
+            if (Budget() is not long budget) return;
             Task running;
             lock (_gate)
             {
@@ -258,6 +259,7 @@ public sealed class OperationJournal
         ArgumentNullException.ThrowIfNull(batch);
         List<IBlob> dropped;
         PassInfo info;
+        long? budget = Budget();
         lock (_gate)
         {
             if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
@@ -274,7 +276,7 @@ public sealed class OperationJournal
             info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
             var entry = new Entry(info, segment);
 
-            int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)]);
+            int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
             _lastId = id;
             batch.Id = id;
             batch.Applied = true;
@@ -582,10 +584,10 @@ public sealed class OperationJournal
     /// place d'une autre passe comme celle-ci et d'une base à réécrire. Au
     /// pire, toutes sauf la dernière.
     /// </summary>
-    private int MergeCount(List<Weight> active)
+    private int MergeCount(List<Weight> active, long? limit)
     {
         int count = Math.Max(0, active.Count - _options.MaxUndoSteps);
-        if (_options.DiskBudgetBytes is not long budget) return count;
+        if (limit is not long budget) return count;
         // une autre passe comme celle-ci, comptée comme EnsureRoom l'a comptée avant de la construire
         long margin = BaseLayer.DenseBytes(_buffer) + Math.Max(active[^1].Bytes, _lastEstimate);
         if (Usage() - _undo.Sum(e => e.Segment.Blob.Length) + active.Sum(w => w.Bytes) + margin <= budget) return count;
@@ -593,6 +595,9 @@ public sealed class OperationJournal
             if (Steady(active, k) + margin <= budget) return k;
         return Math.Max(count, active.Count - 1);
     }
+
+    /// <summary>Le budget du moment : celui qui change, s'il y en a un, sinon le budget fixe, sinon aucun.</summary>
+    private long? Budget() => _options.DiskBudget is { } budget ? budget() : _options.DiskBudgetBytes;
 
     /// <summary>La place de la session sur le disque, sans ce qui est à rétablir : l'original, la base, la base en cours d'écriture, les segments en fusion et annulables.</summary>
     private long Usage() =>
