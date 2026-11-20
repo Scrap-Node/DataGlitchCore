@@ -482,6 +482,7 @@ public sealed class OperationJournal
     /// </summary>
     private void MergeLoop(CancellationToken ct)
     {
+        Background.LowerPriority();
         while (true)
         {
             BaseLayer? old;
@@ -644,3 +645,37 @@ public sealed class OperationJournal
 /// <summary>Le journal vu d'un coup, pour les tests (<see cref="OperationJournal.Snapshot"/>).</summary>
 internal sealed record JournalSnapshot(BaseLayer? Base, BufferState State, IReadOnlyList<IBlob> Files, bool Merging,
                                        long ReservedBytes, long DiskBytes);
+
+/// <summary>
+/// La tâche de fond passe après l'app : son fil a une priorité basse, et sous
+/// macOS ses lectures et écritures disque aussi (<c>setiopolicy_np</c>,
+/// <c>IOPOL_UTILITY</c>). Une fusion plus lente gêne moins la passe suivante,
+/// et en regroupe davantage.
+/// </summary>
+internal static class Background
+{
+    private const int DiskIo = 0;        // IOPOL_TYPE_DISK
+    private const int ThisThread = 1;    // IOPOL_SCOPE_THREAD
+    private const int Utility = 4;       // IOPOL_UTILITY
+
+    /// <summary>Faux pour mesurer l'effet de la priorité basse : le banc la compare à la priorité normale.</summary>
+    internal static bool Enabled { get; set; } = Environment.GetEnvironmentVariable("DGC_MERGE_PRIORITY") != "normale";
+
+    public static void LowerPriority()
+    {
+        if (!Enabled) return;
+        Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+        if (!OperatingSystem.IsMacOS()) return;
+        try
+        {
+            setiopolicy_np(DiskIo, ThisThread, Utility);
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            // sans politique d'E/S, la fusion garde la priorité normale
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc")]
+    private static extern int setiopolicy_np(int type, int scope, int policy);
+}

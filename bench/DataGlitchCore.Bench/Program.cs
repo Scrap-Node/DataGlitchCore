@@ -15,6 +15,8 @@ using DataGlitchCore.Core;
 //   --max-gb 9            empreinte au-delà de laquelle le banc s'arrête plutôt que de faire swapper
 //   --label base          nom de la série de mesures
 //   --out DIR             où écrire le compte rendu (défaut : bench/mesures)
+//   --max-undo 20         passes annulables (D7) ; au-delà, les plus anciennes fusionnent
+//   --priorite normale    la fusion en tâche de fond garde la priorité normale (par défaut, elle passe après l'app)
 //
 // Le même code mesure aussi la 0.5.0, où la fusion se fait dans Apply :
 // WaitForMergesAsync et IsMerging y sont cherchés par réflexion.
@@ -35,8 +37,11 @@ int[] sizes = options.Ints("sizes", [256, 1024]);
 int[] checkpoints = options.Ints("passes", [1, 10, 20, 30]);
 double maxGb = options.Double("max-gb", 9);
 string label = options.Get("label") ?? "mesure";
+int maxUndo = options.Ints("max-undo", [20])[0];
+// les scénarios tournent dans des processus neufs : ils héritent de la variable
+if (options.Get("priorite") == "normale") Environment.SetEnvironmentVariable("DGC_MERGE_PRIORITY", "normale");
 
-var report = new Report(label, Machine.Describe(), checkpoints, maxGb);
+var report = new Report(label, Machine.Describe(), checkpoints, maxGb, maxUndo);
 foreach (int size in sizes)
 {
     string file = await Inputs.WavAsync(data, size);
@@ -44,6 +49,7 @@ foreach (int size in sizes)
     var result = await Child.RunAsync<ScenarioResult>(
     [
         "--scenario", file, "--passes", string.Join(',', checkpoints), "--max-gb", maxGb.ToString(CultureInfo.InvariantCulture),
+        "--max-undo", maxUndo.ToString(CultureInfo.InvariantCulture),
     ]);
     report.Add(result);
 }
@@ -109,7 +115,7 @@ internal static class Scenario
             FileBuffer buffer = null!;
             var open = Measure.Run(() => buffer = FileBuffer.Open(file, work));
             using var _ = buffer;
-            var journal = new OperationJournal(buffer);
+            var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = options.Ints("max-undo", [20])[0] });
             var opened = Measure.Settle();
             var mask = DestructionMask.FromPayloadStart(44);
 
@@ -244,8 +250,10 @@ internal static class Inputs
 }
 
 /// <summary>Le compte rendu, en Markdown, et sa version JSON.</summary>
-internal sealed class Report(string label, Dictionary<string, string> machine, int[] checkpoints, double maxGb)
+internal sealed class Report(string label, Dictionary<string, string> machine, int[] checkpoints, double maxGb, int maxUndo)
 {
+    public int MaxUndoSteps { get; } = maxUndo;
+    public bool LowPriorityMerges { get; } = Environment.GetEnvironmentVariable("DGC_MERGE_PRIORITY") != "normale";
     public string Label { get; } = label;
     public Dictionary<string, string> Host { get; } = machine;
     public int[] CheckpointPasses { get; } = checkpoints;
@@ -269,8 +277,9 @@ internal sealed class Report(string label, Dictionary<string, string> machine, i
         var md = new StringBuilder();
         md.AppendLine($"# Banc du cœur : {Label}");
         md.AppendLine();
-        md.AppendLine($"{DateTime.Now:yyyy-MM-dd HH:mm}, DataGlitchCore {Version} ({Commit}), fusion {(BackgroundMerges ? "en tâche de fond" : "dans Apply")}. " +
-                      $"Limite d'empreinte : {MaxGb} Go.");
+        md.AppendLine($"{DateTime.Now:yyyy-MM-dd HH:mm}, DataGlitchCore {Version} ({Commit}), fusion " +
+                      $"{(BackgroundMerges ? $"en tâche de fond, en priorité {(LowPriorityMerges ? "basse" : "normale")}" : "dans Apply")}, " +
+                      $"{MaxUndoSteps} passes annulables. Limite d'empreinte : {MaxGb} Go.");
         md.AppendLine();
         foreach (var (key, value) in Host) md.AppendLine($"- **{key}** : {value}");
         md.AppendLine();
