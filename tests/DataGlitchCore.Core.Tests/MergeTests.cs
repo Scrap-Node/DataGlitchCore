@@ -624,15 +624,20 @@ public sealed class MergeTests : IDisposable
         Write(journal, buffer, model, 100, Fill(10, 2), wait: false);
         hold.WaitReached();
 
-        // basculée : l'état ne référence plus le segment fusionné, mais il est encore sur le disque
-        Assert.False(journal.IsMerging);
+        // basculée : l'état ne référence plus le segment fusionné, mais il est encore sur le disque ; la
+        // fusion n'est finie qu'une fois supprimé ce qu'elle remplace (§7, étape 3), et il compte jusque-là
+        Assert.True(journal.IsMerging);
         Assert.Contains("00000001.seg", Files("segments"));
+        long onDisk = new FileInfo(Path.Combine(_dir, "source.bin")).Length
+                      + Directory.GetFiles(Path.Combine(_dir, "segments")).Sum(f => new FileInfo(f).Length);
+        Assert.Equal(onDisk, journal.DiskBytes);
         var wait = journal.WaitForMergesAsync();
         await Task.Delay(200);
         Assert.False(wait.IsCompleted);
 
         hold.Release();
         await wait.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(journal.IsMerging);
         Assert.Equal(["00000002.seg", "base-00000001.seg"], Files("segments"));
         Assert.Equal(model, buffer.Current.ReadAll());
     }

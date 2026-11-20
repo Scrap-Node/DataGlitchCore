@@ -56,6 +56,8 @@ public sealed class OperationJournal
     private CancellationTokenSource _cancel = new();
     private int _jobCount;        // passes de la fusion en cours, les premières de _merging
     private long _reserved;       // la base en cours d'écriture, comptée au pire
+    // ce qu'une fusion a remplacé ou abandonné, encore sur le disque jusqu'à sa suppression (étape 3)
+    private readonly List<IBlob> _dropping = new();
     private long _lastEstimate;   // la place demandée par la dernière passe acceptée
     private Exception? _mergeError;
 
@@ -135,12 +137,16 @@ public sealed class OperationJournal
         }
     }
 
-    /// <summary>Une fusion est prévue ou en cours : des passes fusionnées sont encore des couches de l'état.</summary>
+    /// <summary>
+    /// Une fusion est prévue ou en cours : des passes fusionnées sont encore
+    /// des couches de l'état, ou ce qu'une fusion a remplacé n'est pas encore
+    /// supprimé (§7, étape 3).
+    /// </summary>
     public bool IsMerging
     {
         get
         {
-            lock (_gate) return _merging.Count > 0;
+            lock (_gate) return _merging.Count > 0 || _dropping.Count > 0;
         }
     }
 
@@ -166,7 +172,7 @@ public sealed class OperationJournal
     {
         get
         {
-            lock (_gate) return _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + Segments().Sum(e => e.Segment.Blob.Length);
+            lock (_gate) return Usage() + _redo.Sum(e => e.Segment.Blob.Length);
         }
     }
 
@@ -383,9 +389,10 @@ public sealed class OperationJournal
     {
         lock (_gate)
         {
-            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
-            long disk = _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + Segments().Sum(e => e.Segment.Blob.Length);
-            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0, _reserved, disk);
+            // ce qu'une fusion a remplacé compte tant qu'il est sur le disque
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_dropping).ToList();
+            long disk = Usage() + _redo.Sum(e => e.Segment.Blob.Length);
+            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0 || _dropping.Count > 0, _reserved, disk);
         }
     }
 
@@ -524,13 +531,15 @@ public sealed class OperationJournal
             catch (Exception ex)
             {
                 // interrompue entre l'écriture et la bascule : la base écrite ne sert plus
+                var abandoned = merged.Files.ToList();
                 lock (_gate)
                 {
                     _reserved = 0;
                     _jobCount = 0;
+                    _dropping.AddRange(abandoned);
                     if (!ct.IsCancellationRequested) _mergeError = ex;
                 }
-                foreach (var blob in merged.Files) _buffer.Store.Delete(blob);
+                Drop(abandoned);
                 return;
             }
 
@@ -550,6 +559,8 @@ public sealed class OperationJournal
                 }
                 _reserved = 0;
                 _jobCount = 0;
+                // compté jusqu'à sa suppression : la fusion n'est finie qu'une fois l'étape 3 faite
+                _dropping.AddRange(dropped);
             }
             try
             {
@@ -561,7 +572,23 @@ public sealed class OperationJournal
             }
             finally
             {
-                foreach (var blob in dropped) _buffer.Store.Delete(blob);
+                Drop(dropped);
+            }
+        }
+    }
+
+    /// <summary>Supprime ce qu'une fusion a remplacé ou abandonné, puis cesse de le compter.</summary>
+    private void Drop(List<IBlob> files)
+    {
+        try
+        {
+            foreach (var blob in files) _buffer.Store.Delete(blob);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                foreach (var blob in files) _dropping.Remove(blob);
             }
         }
     }
@@ -594,9 +621,14 @@ public sealed class OperationJournal
         return Math.Max(count, active.Count - 1);
     }
 
-    /// <summary>La place de la session sur le disque, sans ce qui est à rétablir : l'original, la base, la base en cours d'écriture, les segments en fusion et annulables.</summary>
+    /// <summary>
+    /// La place de la session sur le disque, sans ce qui est à rétablir :
+    /// l'original, la base, la base en cours d'écriture, ce qu'une fusion a
+    /// remplacé et qui n'est pas encore supprimé, les segments en fusion et annulables.
+    /// </summary>
     private long Usage() =>
-        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _merging.Concat(_undo).Sum(e => e.Segment.Blob.Length);
+        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _dropping.Sum(b => b.Length)
+        + _merging.Concat(_undo).Sum(e => e.Segment.Blob.Length);
 
     /// <summary>La place de la session, au pire, une fois écrite la base qui fusionne tout ce qui attend et les <paramref name="count"/> plus anciennes de <paramref name="active"/>.</summary>
     private long Steady(List<Weight> active, int count) =>
