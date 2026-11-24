@@ -69,7 +69,6 @@ public static class DestructionEngine
         int maxShift = Math.Max(1, options.MaxShiftBlocks);
         using var reader = new PassReader(buffer, builder.BaseState, Math.Max(buffer.Options.ReadWindowBytes, blockSize));
         var writer = builder.Writer;
-        int shift = buffer.Options.ChunkShift;
 
         var oldBytes = new byte[blockSize];
         var newBytes = new byte[blockSize];
@@ -114,32 +113,13 @@ public static class DestructionEngine
                 }
                 writer.Append(dst);
                 builder.CountEdit(off, off + len);
-                AddDeltas(writer, shift, off, old, dst, orig);
+                writer.AddDeltas(off, old, dst, orig);
                 previousEnd = off + len;
                 previousWindow = w;
             }
         }
 
         return builder.Build(DescribeLabel(options));
-    }
-
-    /// <summary>
-    /// Les compteurs du segment : par tranche, les octets que le bloc fait
-    /// passer de « égal à l'original » à « différent », moins l'inverse.
-    /// </summary>
-    private static void AddDeltas(SegmentWriter writer, int shift, long offset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, ReadOnlySpan<byte> original)
-    {
-        int done = 0;
-        while (done < after.Length)
-        {
-            long position = offset + done;
-            long chunk = position >> shift;
-            int n = (int)Math.Min(after.Length - done, ((chunk + 1) << shift) - position);
-            long delta = DiffMap.CountDifferences(after.Slice(done, n), original.Slice(done, n))
-                       - DiffMap.CountDifferences(before.Slice(done, n), original.Slice(done, n));
-            writer.AddDelta(chunk, (int)delta);
-            done += n;
-        }
     }
 
     /// <summary>

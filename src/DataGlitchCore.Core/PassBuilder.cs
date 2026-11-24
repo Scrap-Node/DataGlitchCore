@@ -79,51 +79,86 @@ public sealed class PassBuilder : IDisposable
         if (_diffNext >= 0 && offset != _diffNext) CloseDiffRun();
         _diffNext = offset + before.Length;
 
-        var original = ArrayPool<byte>.Shared.Rent(before.Length);
+        // Par régions : dans une plage, les octets modifiés et les écarts courts
+        // qui les séparent s'écrivent d'un seul Append, et leurs deltas se
+        // comptent d'un coup (un octet inchangé compte 0). Mêmes plages, mêmes
+        // octets et mêmes compteurs qu'octet par octet, ce qui coûtait
+        // plusieurs appels par octet sur toute l'étendue d'un ConfineToBand.
+        byte[]? original = null;
         try
         {
-            _buffer.Original.Read(offset, original.AsSpan(0, before.Length));
-            for (int i = 0; i < before.Length; i++)
+            int n = before.Length;
+            int i = 0;
+            while (i < n)
             {
-                long position = offset + i;
-                bool same = before[i] == after[i];
                 if (!_diffInRun)
                 {
-                    if (same) continue;
+                    i += before[i..].CommonPrefixLength(after[i..]);
+                    if (i >= n) break;
                     _diffInRun = true;
-                    _diffRunStart = position;
+                    _diffRunStart = offset + i;
                     _diffSame = 0;
                     _pendingCount = 0;
-                    _writer.StartRun(position);
+                    _writer.StartRun(offset + i);
                 }
 
-                if (same)
+                // la région : de i jusqu'au dernier octet modifié avant un écart de plus de mergeGap octets, ou la fin de la tranche
+                int region = i, lastDiffEnd = -1;
+                bool closed = false;
+                while (i < n)
                 {
-                    // un octet inchangé n'entre dans la plage que si un octet modifié le suit avant la fin de l'écart
-                    _diffSame++;
-                    if (_diffSame > mergeGap)
+                    if (before[i] != after[i])
                     {
-                        CloseDiffRun();
-                        continue;
+                        // les octets inchangés gardés d'une tranche précédente entrent dans la plage : un octet modifié les suit
+                        if (lastDiffEnd < 0 && _pendingCount > 0) _writer.Append(_pendingSame.AsSpan(0, _pendingCount));
+                        _pendingCount = 0;
+                        _diffSame = 0;
+                        i += DiffMap.FirstEqual(before[i..], after[i..]);
+                        lastDiffEnd = i;
                     }
-                    if (_pendingCount == _pendingSame.Length) Array.Resize(ref _pendingSame, _pendingSame.Length * 2);
-                    _pendingSame[_pendingCount++] = after[i];
+                    else
+                    {
+                        int same = before[i..].CommonPrefixLength(after[i..]);
+                        i += same;
+                        if (_diffSame + same > mergeGap)
+                        {
+                            closed = true;
+                            break;
+                        }
+                        _diffSame += same;
+                    }
                 }
-                else
+
+                if (lastDiffEnd >= 0)
                 {
-                    if (_pendingCount > 0) _writer.Append(_pendingSame.AsSpan(0, _pendingCount));
-                    _pendingCount = 0;
-                    _diffSame = 0;
-                    _diffLastDiff = position;
-                    _writer.Append(after.Slice(i, 1));
-                    int delta = (after[i] != original[i] ? 1 : 0) - (before[i] != original[i] ? 1 : 0);
-                    if (delta != 0) _writer.AddDelta(position >> _shift, delta);
+                    _writer.Append(after[region..lastDiffEnd]);
+                    _diffLastDiff = offset + lastDiffEnd - 1;
+                    if (original is null)
+                    {
+                        original = ArrayPool<byte>.Shared.Rent(n);
+                        _buffer.Original.Read(offset, original.AsSpan(0, n));
+                    }
+                    _writer.AddDeltas(offset + region, before[region..lastDiffEnd], after[region..lastDiffEnd],
+                                      original.AsSpan(region, lastDiffEnd - region));
                 }
+                if (closed)
+                {
+                    CloseDiffRun();
+                    continue;
+                }
+
+                // fin de la tranche dans une plage : ses derniers octets inchangés attendent un octet modifié
+                int tail = lastDiffEnd >= 0 ? lastDiffEnd : region;
+                int count = n - tail;
+                if (_pendingCount + count > _pendingSame.Length)
+                    Array.Resize(ref _pendingSame, Math.Max(_pendingSame.Length * 2, _pendingCount + count));
+                after[tail..].CopyTo(_pendingSame.AsSpan(_pendingCount));
+                _pendingCount += count;
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(original);
+            if (original is not null) ArrayPool<byte>.Shared.Return(original);
         }
     }
 

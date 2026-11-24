@@ -156,6 +156,27 @@ public static class DiffMap
         return changed;
     }
 
+    /// <summary>Indice du premier octet égal dans les deux plages, de même longueur ; leur longueur s'il n'y en a pas.</summary>
+    internal static int FirstEqual(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    {
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated && a.Length >= Vector128<byte>.Count)
+        {
+            ref byte ra = ref MemoryMarshal.GetReference(a);
+            ref byte rb = ref MemoryMarshal.GetReference(b);
+            int last = a.Length - Vector128<byte>.Count;
+            for (; i <= last; i += Vector128<byte>.Count)
+            {
+                var equal = Vector128.Equals(Vector128.LoadUnsafe(ref ra, (nuint)i), Vector128.LoadUnsafe(ref rb, (nuint)i));
+                if (equal != Vector128<byte>.Zero)
+                    return i + BitOperations.TrailingZeroCount(equal.ExtractMostSignificantBits());
+            }
+        }
+        for (; i < a.Length; i++)
+            if (a[i] == b[i]) return i;
+        return a.Length;
+    }
+
     /// <summary>Nombre de positions où les deux plages, de même longueur, diffèrent.</summary>
     internal static long CountDifferences(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
     {
