@@ -61,6 +61,9 @@ public sealed class OperationJournal
     private long _lastEstimate;   // la place demandée par la dernière passe acceptée
     private Exception? _mergeError;
 
+    // une passe se range dans segments/, hors du verrou (Apply)
+    private bool _applying;
+
     public OperationJournal(FileBuffer buffer, JournalOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(buffer);
@@ -263,42 +266,80 @@ public sealed class OperationJournal
     public PassInfo Apply(DestructionBatch batch, string? appData = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
-        List<IBlob> dropped;
-        PassInfo info;
         long? budget = Budget();
+        long id;
         lock (_gate)
         {
-            if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
-            if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
-            if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
-            // une fusion qui aboutit change l'agencement de l'état, pas son numéro
-            if (batch.BaseState.Number != _buffer.State.Number)
-                throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
+            Check(batch);
+            if (_applying) throw new InvalidOperationException(ConcurrentWrite);
+            _applying = true;
+            id = _lastId + 1;
+        }
 
-            long id = _lastId + 1;
+        // Le segment est forcé sur le disque et rangé dans segments/ hors du
+        // verrou : l'écriture forcée prend jusqu'à quelques centaines de ms, et
+        // le verrou bloquait pendant ce temps tout ce qui lit le journal :
+        // l'interface (History, CanUndo), la bascule d'une fusion, et les
+        // autres sessions qui comptent leur budget (SessionStore.BudgetFor).
+        //
+        // C'est sûr parce que les écritures du journal (Apply, Undo, Redo,
+        // ResetAll) ne sont pas concurrentes entre elles : l'appelant les
+        // sérialise (le Gate des apps). Entre les deux verrous, seule la tâche
+        // de fond agit, et une fusion ne change ni le numéro de l'état ni
+        // _lastId : ce qui a été vérifié reste vrai. Un appelant qui ne
+        // sérialise pas ses écritures est refusé, sans rien changer : une
+        // seconde passe pendant celle-ci par _applying, une annulation ou un
+        // retour pendant celle-ci par la seconde vérification.
+        PassInfo info;
+        List<IBlob> dropped;
+        try
+        {
             var segment = batch.Segment;
             segment.WriteId(id);
             segment.MovedTo(_buffer.Store.Publish(segment.Blob, $"{id:D8}.seg"));
-            info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
-            var entry = new Entry(info, segment);
+            lock (_gate)
+            {
+                Check(batch);
+                if (_lastId + 1 != id) throw new InvalidOperationException(ConcurrentWrite);
+                info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
+                var entry = new Entry(info, segment);
 
-            int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
-            _lastId = id;
-            batch.Id = id;
-            batch.Applied = true;
-            dropped = _redo.Select(e => e.Segment.Blob).ToList();
-            _redo.Clear();
-            _undo.Add(entry);
-            _buffer.AddDiffs(segment, +1);
-            if (count > 0) Schedule(count);
-            // après un échec, chaque passe relance la fusion de ce qui attend encore
-            StartWorker();
-            Publish();
+                int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
+                _lastId = id;
+                batch.Id = id;
+                batch.Applied = true;
+                dropped = _redo.Select(e => e.Segment.Blob).ToList();
+                _redo.Clear();
+                _undo.Add(entry);
+                _buffer.AddDiffs(segment, +1);
+                if (count > 0) Schedule(count);
+                // après un échec, chaque passe relance la fusion de ce qui attend encore
+                StartWorker();
+                Publish();
+            }
+        }
+        finally
+        {
+            lock (_gate) _applying = false;
         }
 
         // ensuite seulement, ce que l'état ne référence plus
         foreach (var blob in dropped) _buffer.Store.Delete(blob);
         return info;
+    }
+
+    private const string ConcurrentWrite =
+        "Une autre écriture du journal a lieu en même temps : passes, annulations et retours doivent être sérialisés. Rien n'a été modifié.";
+
+    /// <summary>La passe peut-elle s'appliquer à l'état courant ? Sous le verrou.</summary>
+    private void Check(DestructionBatch batch)
+    {
+        if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
+        if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
+        if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
+        // une fusion qui aboutit change l'agencement de l'état, pas son numéro
+        if (batch.BaseState.Number != _buffer.State.Number)
+            throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
     }
 
     public PassInfo? Undo()
