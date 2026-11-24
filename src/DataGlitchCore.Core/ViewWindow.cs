@@ -14,10 +14,21 @@ public readonly record struct ViewWindow
 
     public static readonly ViewWindow Full = new(0, 1);
 
+    /// <summary>
+    /// La fenêtre <c>[start, end]</c>, ramenée dans le fichier. Une borne hors
+    /// de <c>[0, 1]</c> est ramenée au bord : une borne infinie donne la
+    /// fenêtre entière. Une borne qui n'est pas un nombre (NaN, une requête mal
+    /// formée) vaut l'infini de son côté, et donne donc elle aussi la fenêtre
+    /// entière, au lieu d'une fenêtre faite de NaN.
+    /// </summary>
     public ViewWindow(double start, double end)
     {
+        if (double.IsNaN(start)) start = double.NegativeInfinity;
+        if (double.IsNaN(end)) end = double.PositiveInfinity;
         if (end < start) (start, end) = (end, start);
-        Span = Math.Clamp(end - start, DefaultMinSpan, 1);
+        double span = end - start;
+        // deux bornes infinies du même côté : ∞ - ∞ n'est pas un nombre
+        Span = double.IsNaN(span) ? 1 : Math.Clamp(span, DefaultMinSpan, 1);
         Start = Math.Clamp(start, 0, 1 - Span);
     }
 
@@ -47,8 +58,9 @@ public readonly record struct ViewWindow
     /// </summary>
     public ViewWindow ZoomAt(double anchor, double factor, double minSpan = DefaultMinSpan)
     {
-        if (factor <= 0 || double.IsNaN(factor)) return this;
-        minSpan = Math.Clamp(minSpan, DefaultMinSpan, 1);
+        // pas de facteur ou pas d'ancre : rien ne bouge
+        if (factor <= 0 || double.IsNaN(factor) || double.IsNaN(anchor)) return this;
+        minSpan = double.IsNaN(minSpan) ? DefaultMinSpan : Math.Clamp(minSpan, DefaultMinSpan, 1);
 
         double span = Math.Clamp(Span / factor, minSpan, 1);
         // fraction de la fenêtre située à gauche de l'ancre, conservée après zoom
@@ -60,6 +72,7 @@ public readonly record struct ViewWindow
     /// <summary>Fait glisser la fenêtre de <paramref name="delta"/> fraction fichier.</summary>
     public ViewWindow PanBy(double delta)
     {
+        if (double.IsNaN(delta)) return this;
         double span = Span;
         double start = Math.Clamp(Start + delta, 0, 1 - span);
         return new ViewWindow(start, start + span);
@@ -68,6 +81,7 @@ public readonly record struct ViewWindow
     /// <summary>Recentre la fenêtre sur un point, sans changer son échelle.</summary>
     public ViewWindow CenteredOn(double fileFraction)
     {
+        if (double.IsNaN(fileFraction)) return this;
         double span = Span;
         double start = Math.Clamp(fileFraction - span / 2, 0, 1 - span);
         return new ViewWindow(start, start + span);
