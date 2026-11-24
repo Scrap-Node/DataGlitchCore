@@ -258,14 +258,22 @@ public class ByteViewTests
             expectedError = ex;
         }
 
+        // et sur le span : le parcours à pile explicite sert aux deux
         if (expectedError is null)
         {
             AssertSameChunks(expected!, Riff.Walk(view, from, to, tolerate));
+            AssertSameChunks(expected!, Riff.Walk(bytes, from, to, tolerate));
             return;
         }
-        var actualError = Assert.ThrowsAny<Exception>(() => Riff.Walk(view, from, to, tolerate));
-        Assert.IsType(expectedError.GetType(), actualError);
-        if (expectedError is RiffFormatException) Assert.Equal(expectedError.Message, actualError.Message);
+        foreach (var actualError in new[]
+                 {
+                     Assert.ThrowsAny<Exception>(() => Riff.Walk(view, from, to, tolerate)),
+                     Assert.ThrowsAny<Exception>(() => Riff.Walk(bytes, from, to, tolerate)),
+                 })
+        {
+            Assert.IsType(expectedError.GetType(), actualError);
+            if (expectedError is RiffFormatException) Assert.Equal(expectedError.Message, actualError.Message);
+        }
     }
 
     [Fact]
