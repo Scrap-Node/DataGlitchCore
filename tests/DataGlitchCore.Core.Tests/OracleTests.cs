@@ -154,6 +154,8 @@ internal sealed class OracleScenario(int seed)
 
     public int SparseMerges { get; private set; }
     public int HeldChecks { get; private set; }
+
+    private int _diskChecks;
     public int ResetsDuringMerge { get; private set; }
     public int PassesBuiltDuringMerge { get; private set; }
     public int DenseMerges { get; private set; }
@@ -513,6 +515,10 @@ internal sealed class OracleScenario(int seed)
         // pendant une fusion libre, rien n'est stable sur le disque : on regarde
         // l'instantané du journal, et le disque seulement une fois les fusions finies
         if (_mode == MergeMode.Libre && _journal.IsMerging && _rng.Next(2) == 0) WaitForMerges();
+        // Une vérification sur deux attend les suppressions en tâche de fond (passes à rétablir abandonnées,
+        // retour à l'original) ; l'autre les laisse courir pendant les pas suivants. Sans tirage : la suite
+        // des pas de chaque seed ne change pas.
+        if (_diskChecks++ % 2 == 0) _journal.WaitForDeletions();
         // retenue avant l'instantané, la fusion reste figée jusqu'au prochain pas : l'instantané et le
         // disque concordent. Retenue après, elle a pu changer le disque entre les deux : rien n'est stable
         bool held = _held;
@@ -544,8 +550,9 @@ internal sealed class OracleScenario(int seed)
         Assert.Equal(_buffer.Length + snapshot.ReservedBytes + snapshot.Files.Sum(f => f.Length), snapshot.DiskBytes);
         if (!snapshot.Merging) Assert.Equal(0, snapshot.ReservedBytes); // la nouvelle base n'est comptée que pendant sa fusion
 
-        // le disque : exact une fois les fusions finies ; retenue, la fusion laisse au plus sa base en cours
-        bool stable = !snapshot.Merging || held;
+        // le disque : exact une fois les fusions et les suppressions finies ; retenue, la fusion laisse au
+        // plus sa base en cours. Ce qui attend sa suppression compte, mais peut disparaître à tout moment
+        bool stable = (!snapshot.Merging || held) && !snapshot.Deleting;
         if (!stable) return;
         var expected = snapshot.Files.Select(f => f.Name).Order().ToList();
         List<string> present, temporary;

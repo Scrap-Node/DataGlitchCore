@@ -33,7 +33,9 @@ public sealed record PassInfo(long Id, string Label, long EditCount, long BytesC
 ///
 /// Les écritures (passes, annulations, retours) ne sont pas concurrentes entre
 /// elles : l'appelant les sérialise. La tâche de fond, elle, est synchronisée
-/// par le journal.
+/// par le journal. Ce que l'historique ne référence plus (les passes à
+/// rétablir qu'une passe abandonne, tout ce qu'un retour à l'original efface)
+/// est supprimé en tâche de fond, et compté sur le disque jusque-là.
 /// </summary>
 public sealed class OperationJournal
 {
@@ -60,6 +62,12 @@ public sealed class OperationJournal
     private readonly List<IBlob> _dropping = new();
     private long _lastEstimate;   // la place demandée par la dernière passe acceptée
     private Exception? _mergeError;
+
+    // ce que l'historique ne référence plus (passes à rétablir abandonnées, retour à l'original) : supprimé en
+    // tâche de fond, compté sur le disque jusqu'à sa suppression
+    private readonly List<IBlob> _deleting = new();
+    private Task _deleter = Task.CompletedTask;
+    private bool _deleterRunning;
 
     // une passe se range dans segments/, hors du verrou (Apply)
     private bool _applying;
@@ -169,7 +177,8 @@ public sealed class OperationJournal
     /// <summary>
     /// La place de la session sur le disque : l'original, la base et les
     /// segments, à rétablir compris. Pendant une fusion, l'ancienne base et la
-    /// nouvelle comptent toutes les deux, la nouvelle à sa taille au pire.
+    /// nouvelle comptent toutes les deux, la nouvelle à sa taille au pire. Ce
+    /// qui attend sa suppression compte jusqu'à ce qu'elle soit faite.
     /// </summary>
     public long DiskBytes
     {
@@ -180,9 +189,10 @@ public sealed class OperationJournal
     }
 
     /// <summary>
-    /// Attend que les fusions prévues soient écrites, et les fichiers
-    /// fusionnés supprimés. Pour les tests, les bancs et un arrêt propre :
-    /// l'app n'en a pas besoin, l'état est juste à tout moment.
+    /// Attend que les fusions prévues soient écrites, et supprimés les
+    /// fichiers qu'elles remplacent ou que l'historique ne référence plus.
+    /// Pour les tests, les bancs et un arrêt propre : l'app n'en a pas besoin,
+    /// l'état est juste à tout moment.
     /// </summary>
     /// <exception cref="IOException">La fusion a échoué ; l'état reste juste.</exception>
     public async Task WaitForMergesAsync(CancellationToken ct = default)
@@ -198,7 +208,7 @@ public sealed class OperationJournal
                 }
                 else
                 {
-                    if (_merging.Count == 0) return;
+                    if (_merging.Count == 0) break;
                     if (_mergeError is { } error)
                         throw new IOException($"La fusion de l'historique a échoué : {error.Message}", error);
                     StartWorker();
@@ -207,7 +217,25 @@ public sealed class OperationJournal
             }
             await worker.WaitAsync(ct).ConfigureAwait(false);
         }
+        await WaitForDeletionsAsync(ct).ConfigureAwait(false);
     }
+
+    /// <summary>Attend que soit supprimé ce que l'historique ne référence plus. Ne dépend pas des fusions.</summary>
+    internal async Task WaitForDeletionsAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            Task deleter;
+            lock (_gate)
+            {
+                if (!_deleterRunning) return;
+                deleter = _deleter;
+            }
+            await deleter.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    internal void WaitForDeletions() => WaitForDeletionsAsync().GetAwaiter().GetResult();
 
     /// <summary>
     /// Vérifie qu'une passe d'environ <paramref name="segmentBytes"/> octets
@@ -237,10 +265,11 @@ public sealed class OperationJournal
                     _lastEstimate = segmentBytes;
                     return;
                 }
-                if (_worker is not { IsCompleted: false } worker) throw new DiskBudgetExceededException(needed, budget);
-                running = worker;
+                // une fusion en cours, ou des suppressions, libéreront de la place en aboutissant
+                if (_worker is { IsCompleted: false } worker) running = worker;
+                else if (_deleterRunning) running = _deleter;
+                else throw new DiskBudgetExceededException(needed, budget);
             }
-            // une fusion en cours libérera de la place en aboutissant
             try
             {
                 running.Wait();
@@ -291,7 +320,6 @@ public sealed class OperationJournal
         // seconde passe pendant celle-ci par _applying, une annulation ou un
         // retour pendant celle-ci par la seconde vérification.
         PassInfo info;
-        List<IBlob> dropped;
         try
         {
             var segment = batch.Segment;
@@ -308,7 +336,7 @@ public sealed class OperationJournal
                 _lastId = id;
                 batch.Id = id;
                 batch.Applied = true;
-                dropped = _redo.Select(e => e.Segment.Blob).ToList();
+                var dropped = _redo.Select(e => e.Segment.Blob).ToList();
                 _redo.Clear();
                 _undo.Add(entry);
                 _buffer.AddDiffs(segment, +1);
@@ -316,15 +344,14 @@ public sealed class OperationJournal
                 // après un échec, chaque passe relance la fusion de ce qui attend encore
                 StartWorker();
                 Publish();
+                // ensuite seulement, ce que l'état ne référence plus
+                Delete(dropped);
             }
         }
         finally
         {
             lock (_gate) _applying = false;
         }
-
-        // ensuite seulement, ce que l'état ne référence plus
-        foreach (var blob in dropped) _buffer.Store.Delete(blob);
         return info;
     }
 
@@ -378,10 +405,9 @@ public sealed class OperationJournal
     public void ResetAll()
     {
         StopWorker();
-        List<IBlob> files;
         lock (_gate)
         {
-            files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
             _undo.Clear();
             _redo.Clear();
             _merging.Clear();
@@ -392,8 +418,9 @@ public sealed class OperationJournal
             _mergeError = null;
             _buffer.SetState(_buffer.Store.Source, []);
             _buffer.ClearDiffs();
+            // en tâche de fond : revenir à l'original ne dépend plus de la place à libérer (critère 4)
+            Delete(files);
         }
-        foreach (var blob in files) _buffer.Store.Delete(blob);
     }
 
     /// <summary>
@@ -404,7 +431,12 @@ public sealed class OperationJournal
     public long ChangedBytes(long start, long length) => _buffer.ChangedBytes(start, length);
 
     /// <summary>Interrompt la fusion en cours et l'attend : le buffer se ferme. Les passes restent des couches.</summary>
-    internal void Shutdown() => StopWorker();
+    internal void Shutdown()
+    {
+        StopWorker();
+        // le store supprime le dossier de la session après : rien ne doit plus y être supprimé ensuite
+        WaitForDeletions();
+    }
 
     /// <summary>
     /// Pour les tests : appelée par la tâche de fond à chaque étape d'une
@@ -419,7 +451,7 @@ public sealed class OperationJournal
     {
         get
         {
-            lock (_gate) return Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            lock (_gate) return Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_deleting).ToList();
         }
     }
 
@@ -433,9 +465,10 @@ public sealed class OperationJournal
         lock (_gate)
         {
             // ce qu'une fusion a remplacé compte tant qu'il est sur le disque
-            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_dropping).ToList();
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_dropping).Concat(_deleting).ToList();
             long disk = Usage() + _redo.Sum(e => e.Segment.Blob.Length);
-            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0 || _dropping.Count > 0, _reserved, disk);
+            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0 || _dropping.Count > 0, _reserved, disk,
+                                       _deleting.Count > 0);
         }
     }
 
@@ -620,6 +653,59 @@ public sealed class OperationJournal
         }
     }
 
+    // ---------- suppressions en tâche de fond ----------
+
+    /// <summary>
+    /// Confie à la tâche de suppression ce que l'historique ne référence plus.
+    /// Sous le verrou. Les fichiers comptent sur le disque jusqu'à leur
+    /// suppression. Un plantage entre-temps les laisse sur le disque : le
+    /// ménage du lot 5 supprime ce que le manifeste ne référence pas.
+    /// </summary>
+    private void Delete(List<IBlob> files)
+    {
+        if (files.Count == 0) return;
+        _deleting.AddRange(files);
+        if (_deleterRunning) return;
+        _deleterRunning = true;
+        _deleter = Task.Run(DeleteLoop);
+    }
+
+    private void DeleteLoop()
+    {
+        while (true)
+        {
+            IBlob[] files;
+            lock (_gate)
+            {
+                if (_deleting.Count == 0)
+                {
+                    _deleterRunning = false;
+                    return;
+                }
+                files = [.. _deleting];
+            }
+            foreach (var blob in files)
+            {
+                try
+                {
+                    DeleteHook?.Invoke(blob.Name);
+                    _buffer.Store.Delete(blob);
+                }
+                catch (Exception)
+                {
+                    // comme Store.Delete : un fichier qui reste n'est qu'un orphelin, que le ménage du lot 5 supprimera
+                }
+                finally
+                {
+                    lock (_gate) _deleting.Remove(blob);
+                }
+            }
+        }
+    }
+
+    /// <summary>Pour les tests : appelée avant chaque suppression en tâche de fond, elle peut la retenir.</summary>
+    internal Action<string>? DeleteHook { get; set; }
+
     /// <summary>Supprime ce qu'une fusion a remplacé ou abandonné, puis cesse de le compter.</summary>
     private void Drop(List<IBlob> files)
     {
@@ -673,7 +759,7 @@ public sealed class OperationJournal
     /// remplacé et qui n'est pas encore supprimé, les segments en fusion et annulables.
     /// </summary>
     private long Usage() =>
-        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _dropping.Sum(b => b.Length)
+        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _dropping.Sum(b => b.Length) + _deleting.Sum(b => b.Length)
         + _merging.Concat(_undo).Sum(e => e.Segment.Blob.Length);
 
     /// <summary>La place de la session, au pire, une fois écrite la base qui fusionne tout ce qui attend et les <paramref name="count"/> plus anciennes de <paramref name="active"/>.</summary>
@@ -722,7 +808,7 @@ public sealed class OperationJournal
 
 /// <summary>Le journal vu d'un coup, pour les tests (<see cref="OperationJournal.Snapshot"/>).</summary>
 internal sealed record JournalSnapshot(BaseLayer? Base, BufferState State, IReadOnlyList<IBlob> Files, bool Merging,
-                                       long ReservedBytes, long DiskBytes);
+                                       long ReservedBytes, long DiskBytes, bool Deleting = false);
 
 /// <summary>
 /// La tâche de fond passe après l'app : son fil a une priorité basse, et sous

@@ -149,6 +149,7 @@ public sealed class MergeTests : IDisposable
         journal.ResetAll();
         Assert.Equal(data, buffer.Current.ReadAll());
         Assert.Equal(0, journal.MergedPasses);
+        Settle(journal); // les fichiers de l'historique se suppriment en tâche de fond
         Assert.Empty(Files("segments"));
     }
 
@@ -576,6 +577,7 @@ public sealed class MergeTests : IDisposable
         Assert.False(journal.IsMerging);
         Assert.Equal(0, journal.MergedPasses);
         Assert.Equal(data, buffer.Current.ReadAll());
+        Settle(journal); // les fichiers de l'historique se suppriment en tâche de fond
         Assert.Empty(Files("segments"));
         Assert.Empty(Files("tmp"));
 

@@ -1,8 +1,10 @@
 namespace DataGlitchCore.Core.Tests;
 
 /// <summary>
-/// Ce que le journal fait hors de son verrou, hors fusion : l'écriture forcée
-/// d'une passe à son application.
+/// Ce que le journal fait hors de son verrou ou en tâche de fond, hors fusion :
+/// l'écriture forcée d'une passe à son application, et la suppression de ce que
+/// l'historique ne référence plus (passes à rétablir abandonnées, retour à
+/// l'original). Critère 4 : revenir à l'original ne dépend plus de la place à libérer.
 /// </summary>
 public sealed class JournalConcurrencyTests : IDisposable
 {
@@ -29,6 +31,117 @@ public sealed class JournalConcurrencyTests : IDisposable
 
     private static DestructionBatch Pass(FileBuffer buffer, int seed) =>
         DestructionEngine.BuildBatch(buffer, new DestructionOptions { Seed = seed, Density = 0.3, BlockSize = 16 });
+
+    /// <summary>Retient les suppressions en tâche de fond jusqu'à <see cref="Release"/>.</summary>
+    private sealed class HeldDeletions
+    {
+        private readonly ManualResetEventSlim _go = new(false);
+        public int Waiting;
+
+        public void OnDelete(string name)
+        {
+            Interlocked.Increment(ref Waiting);
+            _go.Wait(TimeSpan.FromSeconds(30));
+        }
+
+        public void Release() => _go.Set();
+    }
+
+    [Fact]
+    public async Task A_Reset_Returns_At_Once_And_Its_Files_Count_Until_They_Are_Deleted()
+    {
+        var data = Ramp(32 * 4096);
+        using var buffer = OpenFile(data);
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20 });
+        for (int i = 1; i <= 4; i++) journal.Apply(Pass(buffer, i));
+        await journal.WaitForMergesAsync();
+        long before = journal.DiskBytes;
+        Assert.Equal(OnDisk(), before);
+
+        var held = new HeldDeletions();
+        journal.DeleteHook = held.OnDelete;
+        journal.ResetAll();
+
+        // l'état est l'original tout de suite ; les segments restent sur le disque, et comptés, jusqu'à leur suppression
+        Assert.Equal(data, buffer.Current.ReadAll());
+        Assert.False(journal.CanUndo);
+        Assert.False(journal.IsMerging);
+        Assert.Equal(4, Files("segments").Length);
+        Assert.Equal(OnDisk(), journal.DiskBytes);
+        Assert.Equal(before, journal.DiskBytes);
+
+        held.Release();
+        await journal.WaitForMergesAsync();
+        Assert.Empty(Files("segments"));
+        Assert.Equal(data.Length, journal.DiskBytes);
+    }
+
+    [Fact]
+    public async Task The_Redo_Passes_A_New_Pass_Drops_Count_Until_They_Are_Deleted()
+    {
+        using var buffer = OpenFile(Ramp(32 * 4096));
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20 });
+        journal.Apply(Pass(buffer, 1));
+        journal.Apply(Pass(buffer, 2));
+        journal.Undo();
+
+        var held = new HeldDeletions();
+        journal.DeleteHook = held.OnDelete;
+        journal.Apply(Pass(buffer, 3));
+        Assert.False(journal.CanRedo);
+        Assert.Equal(["00000001.seg", "00000002.seg", "00000003.seg"], Files("segments"));
+        Assert.Equal(OnDisk(), journal.DiskBytes);
+
+        held.Release();
+        await journal.WaitForMergesAsync();
+        Assert.Equal(["00000001.seg", "00000003.seg"], Files("segments"));
+        Assert.Equal(OnDisk(), journal.DiskBytes);
+    }
+
+    [Fact]
+    public async Task A_Pass_That_Only_Fits_Once_The_Deletions_Are_Done_Waits_For_Them()
+    {
+        var data = Ramp(32 * 4096);
+        using var buffer = OpenFile(data);
+        long pass = DestructionEngine.EstimateSegmentBytes(buffer, new DestructionOptions { Seed = 1, Density = 0.3, BlockSize = 16 }, DestructionMask.WholeBuffer);
+        // la place de l'original, d'une base dense et d'une passe : une seconde passe ne tient pas à côté de la première
+        long budget = data.Length + BaseLayer.DenseBytes(buffer) + pass + pass / 2;
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20, DiskBudgetBytes = budget });
+        journal.Apply(Pass(buffer, 1));
+
+        var held = new HeldDeletions();
+        journal.DeleteHook = held.OnDelete;
+        journal.ResetAll();
+        SpinWait.SpinUntil(() => Volatile.Read(ref held.Waiting) > 0, TimeSpan.FromSeconds(30));
+
+        // la passe suivante attend la fin des suppressions au lieu d'être refusée
+        var next = Task.Run(() => Pass(buffer, 2));
+        await Task.Delay(200);
+        Assert.False(next.IsCompleted);
+        held.Release();
+        using var batch = await next.WaitAsync(TimeSpan.FromSeconds(30));
+        journal.Apply(batch);
+        Assert.True(journal.CanUndo);
+    }
+
+    [Fact]
+    public async Task Closing_The_Buffer_Waits_For_The_Deletions()
+    {
+        var buffer = OpenFile(Ramp(32 * 4096));
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20 });
+        for (int i = 1; i <= 3; i++) journal.Apply(Pass(buffer, i));
+        var held = new HeldDeletions();
+        journal.DeleteHook = held.OnDelete;
+        journal.ResetAll();
+
+        var close = Task.Run(buffer.Dispose);
+        await Task.Delay(200);
+        Assert.False(close.IsCompleted);
+        held.Release();
+        await close.WaitAsync(TimeSpan.FromSeconds(30));
+        // le store supprime ensuite le dossier : plus rien n'y est supprimé après la fermeture
+        Assert.Empty(Files("segments"));
+    }
 
     [Fact]
     public async Task Readers_Of_The_Journal_Do_Not_Wait_For_A_Pass_Being_Forced_To_Disk()
