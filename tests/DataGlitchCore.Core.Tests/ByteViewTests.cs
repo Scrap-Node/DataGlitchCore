@@ -204,6 +204,32 @@ public class ByteViewTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Riff_Walk_On_A_View_Reads_The_Same_Chunks_Whatever_Their_Spacing(int seed)
+    {
+        // des frames de quelques Kio à plus d'un Mio, mêlées : la fenêtre des en-têtes
+        // grandit quand ils se suivent de près, revient à 16 Kio quand ils s'éloignent,
+        // et des en-têtes tombent à cheval sur la fin d'une fenêtre
+        var rng = new Random(seed);
+        int[] sizes = [1, 2_000, 9_999, 20_000, 70_001, 130_000, 200_000, 1_300_000];
+        var movi = new List<byte>();
+        for (int i = 0; i < 120; i++)
+        {
+            var payload = new byte[rng.Next(4) == 0 ? sizes[rng.Next(sizes.Length)] : sizes[seed % 4 + 1] + rng.Next(0, 9)];
+            movi.AddRange(Chunk("00dc", payload));
+        }
+        var bytes = Chunk("RIFF", Encoding.ASCII.GetBytes("AVI ").Concat(List("movi", movi.ToArray())).ToArray());
+        using var buffer = FileBuffer.FromBytes("x.avi", bytes);
+        var journal = new OperationJournal(buffer);
+        journal.Apply(DestructionEngine.BuildBatch(buffer, new DestructionOptions { Seed = seed, Density = 0.3 },
+                                                   DestructionMask.FromPayloadStart(bytes.Length)));
+
+        AssertSameChunks(ReferenceRiff.Walk(bytes, 0, bytes.Length), Riff.Walk(buffer.Current, 0, buffer.Length));
+    }
+
+    [Theory]
     [MemberData(nameof(OracleTests.Seeds), MemberType = typeof(OracleTests))]
     public void Riff_Walk_On_A_View_Fails_Or_Succeeds_Like_The_Reference(int seed)
     {

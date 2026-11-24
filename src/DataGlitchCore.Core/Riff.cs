@@ -95,17 +95,25 @@ public static class Riff
     {
         ArgumentNullException.ThrowIfNull(data);
         var result = new List<RiffChunk>();
-        using var window = new ByteWindow(data, HeaderWindowSize);
+        using var window = new ByteWindow(data, HeaderWindowSize, MaxHeaderWindowSize);
         WalkInto(new ViewSource(window), from, to, result, tolerateTruncation);
         return result;
     }
 
     /// <summary>
-    /// Fenêtre de lecture des en-têtes : assez grande pour servir d'un coup
-    /// les en-têtes rapprochés (petites frames, chunks de hdrl), assez petite
+    /// Fenêtre de lecture des en-têtes, quand ils sont éloignés : assez petite
     /// pour ne pas relire beaucoup plus que l'en-tête d'une grosse frame.
     /// </summary>
     private const int HeaderWindowSize = 16 * 1024;
+
+    /// <summary>
+    /// Ce que la fenêtre charge au plus quand les en-têtes se suivent de près
+    /// (les frames d'un AVI) : de quoi en servir plusieurs d'un coup. Chaque
+    /// rechargement relit l'état à travers toutes ses couches ; à 20 passes,
+    /// c'étaient eux qui coûtaient, pas les octets lus. Des en-têtes éloignés
+    /// gardent des fenêtres de <see cref="HeaderWindowSize"/>.
+    /// </summary>
+    private const int MaxHeaderWindowSize = 1024 * 1024;
 
     private static void WalkInto<TSource>(TSource data, long from, long to, List<RiffChunk> into, bool tolerate)
         where TSource : IHeaderSource, allows ref struct
