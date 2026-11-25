@@ -39,7 +39,7 @@ public sealed record RiffChunk(string Id, string? ListType, long Start, long Siz
 public sealed class RiffFormatException(string message) : Exception(message);
 
 /// <summary>
-/// Parcours RIFF récursif, agnostique au format qui l'utilise (WAV comme
+/// Parcours RIFF en profondeur, agnostique au format qui l'utilise (WAV comme
 /// AVI partagent le même conteneur — seul ce qu'il y a dans les chunks
 /// diffère). Contrairement à un walker "à plat", il descend dans chaque
 /// LIST rencontré au lieu de le sauter comme un chunk opaque — indispensable
@@ -95,72 +95,100 @@ public static class Riff
     {
         ArgumentNullException.ThrowIfNull(data);
         var result = new List<RiffChunk>();
-        using var window = new ByteWindow(data, HeaderWindowSize);
+        using var window = new ByteWindow(data, HeaderWindowSize, MaxHeaderWindowSize);
         WalkInto(new ViewSource(window), from, to, result, tolerateTruncation);
         return result;
     }
 
     /// <summary>
-    /// Fenêtre de lecture des en-têtes : assez grande pour servir d'un coup
-    /// les en-têtes rapprochés (petites frames, chunks de hdrl), assez petite
+    /// Fenêtre de lecture des en-têtes, quand ils sont éloignés : assez petite
     /// pour ne pas relire beaucoup plus que l'en-tête d'une grosse frame.
     /// </summary>
     private const int HeaderWindowSize = 16 * 1024;
 
+    /// <summary>
+    /// Ce que la fenêtre charge au plus quand les en-têtes se suivent de près
+    /// (les frames d'un AVI) : de quoi en servir plusieurs d'un coup. Chaque
+    /// rechargement relit l'état à travers toutes ses couches ; à 20 passes,
+    /// c'étaient eux qui coûtaient, pas les octets lus. Des en-têtes éloignés
+    /// gardent des fenêtres de <see cref="HeaderWindowSize"/>.
+    /// </summary>
+    private const int MaxHeaderWindowSize = 1024 * 1024;
+
     private static void WalkInto<TSource>(TSource data, long from, long to, List<RiffChunk> into, bool tolerate)
         where TSource : IHeaderSource, allows ref struct
     {
+        // Les régions des LIST ouverts attendent sur une pile explicite : où
+        // reprendre dans chacune, et où elle s'arrête. Une descente récursive
+        // épuisait la pile d'appels — 20 000 LIST imbriqués tiennent en
+        // 240 Ko, et un StackOverflow ne s'intercepte pas : le processus
+        // tombait sur n'importe quel fichier importé.
+        var enclosing = new Stack<(long Resume, long To)>();
         long pos = from;
-        while (pos + 8 <= to)
+        while (true)
         {
-            string id = data.ReadFourCc(pos);
-            uint declaredSize = data.ReadUInt32(pos + 4);
-            if (declaredSize > int.MaxValue)
+            while (pos + 8 <= to)
             {
-                throw new RiffFormatException(
-                    $"Chunk '{id}' à l'offset {pos} déclare une taille de {declaredSize} octets, " +
-                    "hors de portée (offsets 32 bits) — probablement un AVI OpenDML (> 2 Go), hors périmètre.");
-            }
-            long size = declaredSize;
-
-            bool isList = id is "RIFF" or "LIST";
-            if (isList && size < 4)
-            {
-                throw new RiffFormatException(
-                    $"Chunk {id} à l'offset {pos} trop court ({size} octets) pour contenir un FourCC de sous-type.");
-            }
-            // En long : une taille proche de int.MaxValue ferait déborder la
-            // somme en négatif et passer ce test sans rien rejeter ni raboter.
-            long end = (long)pos + 8 + size;
-            if (end > to)
-            {
-                if (!tolerate)
+                string id = data.ReadFourCc(pos);
+                uint declaredSize = data.ReadUInt32(pos + 4);
+                if (declaredSize > int.MaxValue)
                 {
                     throw new RiffFormatException(
-                        $"Chunk '{id}' à l'offset {pos} (taille déclarée {size}) déborde de sa région " +
-                        $"(fin à {end}, région jusqu'à {to}).");
+                        $"Chunk '{id}' à l'offset {pos} déclare une taille de {declaredSize} octets, " +
+                        "hors de portée (offsets 32 bits) — probablement un AVI OpenDML (> 2 Go), hors périmètre.");
+                }
+                long size = declaredSize;
+
+                bool isList = id is "RIFF" or "LIST";
+                if (isList && size < 4)
+                {
+                    throw new RiffFormatException(
+                        $"Chunk {id} à l'offset {pos} trop court ({size} octets) pour contenir un FourCC de sous-type.");
+                }
+                // En long : une taille proche de int.MaxValue ferait déborder la
+                // somme en négatif et passer ce test sans rien rejeter ni raboter.
+                long end = (long)pos + 8 + size;
+                if (end > to)
+                {
+                    if (!tolerate)
+                    {
+                        throw new RiffFormatException(
+                            $"Chunk '{id}' à l'offset {pos} (taille déclarée {size}) déborde de sa région " +
+                            $"(fin à {end}, région jusqu'à {to}).");
+                    }
+
+                    // Fichier coupé net (typiquement au cap RAM) : on ramène le
+                    // chunk au réel. Rien à parcourir après lui par construction —
+                    // la région s'arrêtera d'elle-même, NextStart tombant dehors.
+                    // Sur un RIFF racine tronqué, la descente dans ses enfants
+                    // rejoue exactement le même raisonnement un cran plus bas, si
+                    // bien que le chunk de charge utile est raboté à son tour.
+                    size = to - pos - 8;
+
+                    // tronqué avant même d'avoir de quoi lire le sous-type : il ne
+                    // reste rien d'exploitable dans cette région
+                    if (isList && size < 4) break;
                 }
 
-                // Fichier coupé net (typiquement au cap RAM) : on ramène le
-                // chunk au réel. Rien à parcourir après lui par construction —
-                // la boucle s'arrêtera d'elle-même, NextStart tombant hors
-                // région. Sur un RIFF racine tronqué, la descente récursive
-                // rejoue exactement le même raisonnement un cran plus bas, si
-                // bien que le chunk de charge utile est raboté à son tour.
-                size = to - pos - 8;
+                string? listType = isList ? data.ReadFourCc(pos + 8) : null;
+                var chunk = new RiffChunk(id, listType, pos, size);
 
-                // tronqué avant même d'avoir de quoi lire le sous-type : il ne
-                // reste rien d'exploitable dans cette région
-                if (isList && size < 4) return;
+                into.Add(chunk);
+                if (isList)
+                {
+                    // ses enfants d'abord, son frère suivant une fois leur région finie
+                    enclosing.Push((chunk.NextStart, to));
+                    (pos, to) = (chunk.DataStart, chunk.DataStart + chunk.DataSize);
+                }
+                else
+                {
+                    pos = chunk.NextStart;
+                }
             }
 
-            string? listType = isList ? data.ReadFourCc(pos + 8) : null;
-            var chunk = new RiffChunk(id, listType, pos, size);
-
-            into.Add(chunk);
-            if (isList) WalkInto(data, chunk.DataStart, chunk.DataStart + chunk.DataSize, into, tolerate);
-
-            pos = chunk.NextStart;
+            // région finie : on reprend celle du LIST qui la contenait
+            if (!enclosing.TryPop(out var parent)) return;
+            (pos, to) = parent;
         }
     }
 

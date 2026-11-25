@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+
 namespace DataGlitchCore.Core;
 
 /// <summary>
@@ -69,7 +72,6 @@ public static class DestructionEngine
         int maxShift = Math.Max(1, options.MaxShiftBlocks);
         using var reader = new PassReader(buffer, builder.BaseState, Math.Max(buffer.Options.ReadWindowBytes, blockSize));
         var writer = builder.Writer;
-        int shift = buffer.Options.ChunkShift;
 
         var oldBytes = new byte[blockSize];
         var newBytes = new byte[blockSize];
@@ -114,32 +116,13 @@ public static class DestructionEngine
                 }
                 writer.Append(dst);
                 builder.CountEdit(off, off + len);
-                AddDeltas(writer, shift, off, old, dst, orig);
+                writer.AddDeltas(off, old, dst, orig);
                 previousEnd = off + len;
                 previousWindow = w;
             }
         }
 
         return builder.Build(DescribeLabel(options));
-    }
-
-    /// <summary>
-    /// Les compteurs du segment : par tranche, les octets que le bloc fait
-    /// passer de « égal à l'original » à « différent », moins l'inverse.
-    /// </summary>
-    private static void AddDeltas(SegmentWriter writer, int shift, long offset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, ReadOnlySpan<byte> original)
-    {
-        int done = 0;
-        while (done < after.Length)
-        {
-            long position = offset + done;
-            long chunk = position >> shift;
-            int n = (int)Math.Min(after.Length - done, ((chunk + 1) << shift) - position);
-            long delta = DiffMap.CountDifferences(after.Slice(done, n), original.Slice(done, n))
-                       - DiffMap.CountDifferences(before.Slice(done, n), original.Slice(done, n));
-            writer.AddDelta(chunk, (int)delta);
-            done += n;
-        }
     }
 
     /// <summary>
@@ -223,28 +206,17 @@ public static class DestructionEngine
                 break;
 
             case DestructionOperator.Xor:
-            {
-                byte mask = o.XorMask;
-                for (int i = 0; i < len; i++) dst[i] = (byte)(src[i] ^ mask);
+                Xor(src, dst, o.XorMask);
                 break;
-            }
 
             case DestructionOperator.BitShift:
-            {
-                int k = Math.Clamp(o.BitRotate, 1, 7);
-                for (int i = 0; i < len; i++)
-                {
-                    byte b = src[i];
-                    dst[i] = (byte)((b << k) | (b >> (8 - k)));
-                }
+                Rotate(src, dst, Math.Clamp(o.BitRotate, 1, 7));
                 break;
-            }
 
             case DestructionOperator.Reverse:
-            {
-                for (int i = 0; i < len; i++) dst[i] = src[len - 1 - i];
+                src.CopyTo(dst);
+                dst.Reverse();
                 break;
-            }
 
             case DestructionOperator.ShiftBlock:
             {
@@ -263,6 +235,46 @@ public static class DestructionEngine
                 for (int i = 0; i < len; i++) dst[i] = src[i % motif];
                 break;
             }
+        }
+    }
+
+    // Les opérateurs octet par octet, 16 octets à la fois : une boucle scalaire
+    // coûte cher sur des centaines de milliers de blocs, et plus encore tant
+    // que le JIT ne l'a pas optimisée (les premières passes d'un processus).
+    // Mêmes octets que la boucle scalaire, qui finit le bloc.
+
+    private static void Xor(ReadOnlySpan<byte> src, Span<byte> dst, byte mask)
+    {
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated && src.Length >= Vector128<byte>.Count)
+        {
+            var m = Vector128.Create(mask);
+            ref byte s = ref MemoryMarshal.GetReference(src);
+            ref byte d = ref MemoryMarshal.GetReference(dst);
+            for (int last = src.Length - Vector128<byte>.Count; i <= last; i += Vector128<byte>.Count)
+                (Vector128.LoadUnsafe(ref s, (nuint)i) ^ m).StoreUnsafe(ref d, (nuint)i);
+        }
+        for (; i < src.Length; i++) dst[i] = (byte)(src[i] ^ mask);
+    }
+
+    /// <summary>Rotation de <paramref name="k"/> bits (1 à 7) vers la gauche de chaque octet.</summary>
+    private static void Rotate(ReadOnlySpan<byte> src, Span<byte> dst, int k)
+    {
+        int i = 0;
+        if (Vector128.IsHardwareAccelerated && src.Length >= Vector128<byte>.Count)
+        {
+            ref byte s = ref MemoryMarshal.GetReference(src);
+            ref byte d = ref MemoryMarshal.GetReference(dst);
+            for (int last = src.Length - Vector128<byte>.Count; i <= last; i += Vector128<byte>.Count)
+            {
+                var v = Vector128.LoadUnsafe(ref s, (nuint)i);
+                (Vector128.ShiftLeft(v, k) | Vector128.ShiftRightLogical(v, 8 - k)).StoreUnsafe(ref d, (nuint)i);
+            }
+        }
+        for (; i < src.Length; i++)
+        {
+            byte b = src[i];
+            dst[i] = (byte)((b << k) | (b >> (8 - k)));
         }
     }
 

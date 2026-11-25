@@ -240,4 +240,74 @@ public class RiffTests
 
         Assert.Empty(chunks);
     }
+
+    // ---- imbrication profonde ----
+
+    /// <summary>
+    /// <paramref name="depth"/> LIST "deep" imbriqués les uns dans les autres,
+    /// un chunk "data" au fond, puis un chunk "tail" frère du LIST le plus
+    /// extérieur : 12 octets par niveau, rien d'autre.
+    /// </summary>
+    private static byte[] DeeplyNested(int depth)
+    {
+        var inner = Chunk("data", new byte[] { 1, 2 });
+        var tail = Chunk("tail", new byte[] { 3, 4 });
+        int nested = depth * 12 + inner.Length;
+        var bytes = new byte[nested + tail.Length];
+        for (int level = 0; level < depth; level++)
+        {
+            int at = level * 12;
+            Encoding.ASCII.GetBytes("LIST").CopyTo(bytes, at);
+            BitConverter.GetBytes((uint)(nested - at - 8)).CopyTo(bytes, at + 4);
+            Encoding.ASCII.GetBytes("deep").CopyTo(bytes, at + 8);
+        }
+        inner.CopyTo(bytes, depth * 12);
+        tail.CopyTo(bytes, nested);
+        return bytes;
+    }
+
+    private static void AssertDeeplyNested(IReadOnlyList<RiffChunk> chunks, int depth, int length)
+    {
+        Assert.Equal(depth + 2, chunks.Count);
+        for (int level = 0; level < depth; level++)
+        {
+            Assert.Equal(("LIST", "deep", (long)level * 12), (chunks[level].Id, chunks[level].ListType, chunks[level].Start));
+        }
+        Assert.Equal(("data", (long)depth * 12, 2L), (chunks[depth].Id, chunks[depth].Start, chunks[depth].Size));
+        // remonté de tous les niveaux, le parcours reprend bien au frère suivant
+        Assert.Equal(("tail", (long)length - 10, 2L), (chunks[depth + 1].Id, chunks[depth + 1].Start, chunks[depth + 1].Size));
+    }
+
+    [Fact]
+    public void Walk_Survives_Lists_Nested_Deeper_Than_The_Call_Stack()
+    {
+        // 20 000 LIST imbriqués tiennent en 240 Ko : une descente récursive
+        // y épuisait la pile, et un StackOverflow ne s'intercepte pas — un
+        // WAV ou un AVI importé suffisait à faire tomber l'app.
+        const int depth = 20_000;
+        var bytes = DeeplyNested(depth);
+
+        AssertDeeplyNested(Riff.Walk(bytes, 0, bytes.Length), depth, bytes.Length);
+
+        using var buffer = FileBuffer.FromBytes("deep.avi", bytes);
+        AssertDeeplyNested(Riff.Walk(buffer.Current, 0, buffer.Length), depth, bytes.Length);
+    }
+
+    [Fact]
+    public void Walk_Tolerant_Climbs_Back_Out_Of_A_Deep_Nest_Cut_Before_A_Subtype()
+    {
+        // Coupé au milieu de l'en-tête du niveau 15 000, avant son sous-type :
+        // les 15 000 niveaux au-dessus sont rabotés, celui-là est abandonné,
+        // et le parcours remonte jusqu'à la racine sans rien inventer.
+        const int depth = 20_000;
+        const int cut = 15_000;
+        var bytes = DeeplyNested(depth)[..(cut * 12 + 10)];
+
+        var chunks = Riff.Walk(bytes, 0, bytes.Length, tolerateTruncation: true);
+
+        Assert.Equal(cut, chunks.Count);
+        Assert.All(chunks, c => Assert.Equal("deep", c.ListType));
+        Assert.Equal(bytes.Length - 8, chunks[0].Size);
+        Assert.Equal(14, chunks[cut - 1].Size); // son sous-type, puis les 10 octets du niveau coupé
+    }
 }

@@ -154,6 +154,26 @@ internal sealed class SegmentWriter
         _diffs[at] += delta;
     }
 
+    /// <summary>
+    /// Les compteurs d'octets écrits à <paramref name="offset"/> : par tranche,
+    /// les octets que l'écriture fait passer de « égal à l'original » à
+    /// « différent », moins l'inverse. Un octet inchangé compte 0.
+    /// </summary>
+    public void AddDeltas(long offset, ReadOnlySpan<byte> before, ReadOnlySpan<byte> after, ReadOnlySpan<byte> original)
+    {
+        int done = 0;
+        while (done < after.Length)
+        {
+            long position = offset + done;
+            long chunk = position >> _shift;
+            int n = (int)Math.Min(after.Length - done, ((chunk + 1) << _shift) - position);
+            long delta = DiffMap.CountDifferences(after.Slice(done, n), original.Slice(done, n))
+                       - DiffMap.CountDifferences(before.Slice(done, n), original.Slice(done, n));
+            AddDelta(chunk, (int)delta);
+            done += n;
+        }
+    }
+
     /// <summary>Écrit la queue, le pied et l'en-tête : le segment est complet, prêt à relire.</summary>
     public void Finish()
     {

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Numerics;
 
 namespace DataGlitchCore.Core;
 
@@ -162,14 +163,32 @@ internal sealed class ByteViewStream(ByteView view) : Stream
 internal sealed class ByteWindow : IDisposable
 {
     private readonly ByteView _view;
+    private readonly int _minSize;
+    private readonly int _maxSize;
     private byte[]? _buffer;
     private long _start;
     private int _count;
+    private long _lastRequest = -1;
 
-    public ByteWindow(ByteView view, int size)
+    /// <summary>Une fenêtre de taille fixe.</summary>
+    public ByteWindow(ByteView view, int size) : this(view, size, size)
+    {
+    }
+
+    /// <summary>
+    /// Une fenêtre qui s'adapte à l'écart entre deux lectures. Éloignées,
+    /// elles chargent <paramref name="minSize"/> octets. Rapprochées (au plus
+    /// un huitième de <paramref name="maxSize"/>), elles chargent de quoi en
+    /// servir environ huit d'un coup, jusqu'à <paramref name="maxSize"/>.
+    /// Chaque rechargement relit l'état à travers toutes ses couches : sur des
+    /// en-têtes de chunk rapprochés, c'est le nombre de rechargements qui coûte.
+    /// </summary>
+    public ByteWindow(ByteView view, int minSize, int maxSize)
     {
         _view = view;
-        _buffer = ArrayPool<byte>.Shared.Rent(size);
+        _minSize = minSize;
+        _maxSize = Math.Max(minSize, maxSize);
+        _buffer = ArrayPool<byte>.Shared.Rent(_maxSize);
     }
 
     /// <summary>
@@ -195,6 +214,8 @@ internal sealed class ByteWindow : IDisposable
     {
         var buffer = _buffer;
         ObjectDisposedException.ThrowIf(buffer is null, this);
+        long previous = _lastRequest;
+        _lastRequest = offset;
         if (offset >= _start && offset + need <= _start + _count) return buffer;
 
         if (need > buffer.Length)
@@ -206,11 +227,20 @@ internal sealed class ByteWindow : IDisposable
             _view.Read(offset, new byte[need]);
         }
 
-        int count = (int)Math.Min(available, buffer.Length);
+        int count = (int)Math.Min(available, Math.Max(need, LoadSize(previous, offset, buffer.Length)));
         _view.Read(offset, buffer.AsSpan(0, count));
         _start = offset;
         _count = count;
         return buffer;
+    }
+
+    /// <summary>Combien charger à <paramref name="offset"/>, la lecture précédente ayant eu lieu à <paramref name="previous"/>.</summary>
+    private int LoadSize(long previous, long offset, int bufferLength)
+    {
+        if (_maxSize == _minSize) return bufferLength;
+        long gap = offset - previous;
+        if (previous < 0 || gap <= 0 || gap > _maxSize / 8) return _minSize;
+        return (int)Math.Clamp((long)BitOperations.RoundUpToPowerOf2((ulong)gap * 8), _minSize, _maxSize);
     }
 
     public void Dispose()
