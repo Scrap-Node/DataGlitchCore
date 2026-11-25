@@ -159,9 +159,11 @@ public sealed class BufferTests : IDisposable
         Assert.Equal(changed, journal.ChangedBytes(0, buf.Length));
         Assert.Equal(files, ((MemoryBlobStore)buf.Store).Names.Order().ToArray());
 
-        // et le journal repart : une passe suivante s'applique normalement
-        journal.Apply(DestructionEngine.BuildBatch(buf, Xor(3)));
+        // et le journal repart : une passe suivante s'applique normalement, sous le numéro
+        // que la passe en échec n'a rangé nulle part
+        var next = journal.Apply(DestructionEngine.BuildBatch(buf, Xor(3)));
         Assert.Equal(2, journal.History.Count);
+        Assert.Equal(2, next.Id);
     }
 
     // ---- réserve de descripteurs (R3) ----

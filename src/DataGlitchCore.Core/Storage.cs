@@ -209,6 +209,9 @@ internal sealed class FileBlobStore : IBlobStore
         string target = Path.Combine(_directory, "segments", name);
         if (_durable) DurableFile.FlushFile(file.Path);
         FileHandles.Forget(file.Path);
+        // un descripteur gardé sur un fichier qu'on remplace lirait encore l'ancien (POSIX), ou empêcherait
+        // de le remplacer (Windows)
+        FileHandles.Forget(target);
         DurableFile.Move(file.Path, target);
         if (_durable) DurableFile.FlushDirectory(Path.GetDirectoryName(target)!);
         var published = new FileBlob("segments/" + name, target, file.Length, writable: false);

@@ -213,4 +213,100 @@ public sealed class JournalConcurrencyTests : IDisposable
         second.Dispose();
         Assert.Equal(["segments/00000001.seg"], store.Names.Order().ToArray());
     }
+
+    // ---- une passe refusée une fois rangée, sur de vrais fichiers ----
+
+    /// <summary>
+    /// Applique une passe qu'une annulation croise pendant qu'elle se range :
+    /// juste après son renommage dans segments/, hors du verrou. Refusée au
+    /// second verrou, elle laisse son fichier à l'app, qui l'abandonnera.
+    /// </summary>
+    private static void ApplyCrossedByAnUndo(OperationJournal journal, DestructionBatch batch)
+    {
+        int crossed = 0;
+        DurableFile.Observer.Value = (step, _) =>
+        {
+            if (step == "renommage" && Interlocked.Exchange(ref crossed, 1) == 0) journal.Undo();
+        };
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => journal.Apply(batch));
+        }
+        finally
+        {
+            DurableFile.Observer.Value = null;
+        }
+        Assert.Equal(1, crossed);
+        Assert.False(batch.Applied);
+    }
+
+    [Fact]
+    public void A_Refused_Pass_Abandoned_After_The_Next_One_Does_Not_Delete_The_Next_Ones_Segment()
+    {
+        using var buffer = OpenFile(Ramp(32 * 4096));
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20 });
+        journal.Apply(Pass(buffer, 1));
+        var refused = Pass(buffer, 2);
+        ApplyCrossedByAnUndo(journal, refused);
+
+        // l'app enchaîne une autre passe, puis abandonne la passe refusée :
+        // elles ne doivent pas avoir pris le même nom dans segments/
+        using var next = Pass(buffer, 3);
+        var expected = next.After.ReadAll();
+        var info = journal.Apply(next);
+        refused.Dispose();
+        journal.WaitForDeletions();
+
+        Assert.Equal(expected, buffer.Current.ReadAll());
+        Assert.Equal([$"{info.Id:D8}.seg"], Files("segments"));
+        Assert.Equal(OnDisk(), journal.DiskBytes);
+    }
+
+    [Fact]
+    public void A_Refused_Pass_That_Was_Read_Does_Not_Stand_In_For_The_Next_One()
+    {
+        using var buffer = OpenFile(Ramp(32 * 4096));
+        var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 20 });
+        journal.Apply(Pass(buffer, 1));
+        using var refused = Pass(buffer, 2);
+        ApplyCrossedByAnUndo(journal, refused);
+        // l'app relit la passe refusée : la réserve de descripteurs garde son fichier ouvert
+        var refusedAfter = refused.After.ReadAll();
+
+        using var next = Pass(buffer, 3);
+        var expected = next.After.ReadAll();
+        Assert.NotEqual(refusedAfter, expected);
+        journal.Apply(next);
+
+        // l'état courant se lit dans le segment de la passe appliquée, pas dans celui de la passe refusée
+        Assert.Equal(expected, buffer.Current.ReadAll());
+    }
+
+    [Fact]
+    public void A_Segment_Published_Over_A_File_Already_Read_Is_Read_Anew()
+    {
+        // le store ne prête plus un descripteur ouvert sur le fichier qu'un renommage remplace
+        string source = Path.Combine(_dir, "source.bin");
+        File.WriteAllBytes(source, Ramp(16));
+        var store = new FileBlobStore(source, _dir, durable: false);
+        try
+        {
+            var first = store.CreateTemp("a.seg");
+            first.Write(0, [1, 1, 1, 1]);
+            first = store.Publish(first, "x.seg");
+            var read = new byte[4];
+            first.Read(0, read);
+
+            var second = store.CreateTemp("b.seg");
+            second.Write(0, [2, 2, 2, 2]);
+            second = store.Publish(second, "x.seg");
+            second.Read(0, read);
+
+            Assert.Equal(new byte[] { 2, 2, 2, 2 }, read);
+        }
+        finally
+        {
+            store.Close();
+        }
+    }
 }

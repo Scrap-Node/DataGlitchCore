@@ -1,7 +1,8 @@
 namespace DataGlitchCore.Core;
 
 /// <summary>Une passe de l'historique, telle que l'app l'affiche et la range.</summary>
-/// <param name="Id">Numéro donné à l'application, croissant dans la session.</param>
+/// <param name="Id">Numéro donné à l'application, croissant dans la session. Une passe refusée
+/// faute d'écritures sérialisées, une fois rangée, garde le sien : le suivant le saute.</param>
 /// <param name="Label">Libellé de la passe.</param>
 /// <param name="EditCount">Nombre d'écritures.</param>
 /// <param name="BytesChanged">Total des octets de ces écritures.</param>
@@ -48,6 +49,8 @@ public sealed class OperationJournal
     // fusionnées pour l'historique, encore des couches de l'état, les plus anciennes d'abord
     private readonly List<Entry> _merging = new();
     private BaseLayer? _base;
+    // le dernier numéro pris par une passe, appliquée ou refusée une fois rangée dans segments/ sous ce nom :
+    // jamais repris, pas même après un retour à l'original, dont les segments se suppriment en tâche de fond
     private long _lastId;
 
     private long _mergedPasses;
@@ -302,7 +305,7 @@ public sealed class OperationJournal
             Check(batch);
             if (_applying) throw new InvalidOperationException(ConcurrentWrite);
             _applying = true;
-            id = _lastId + 1;
+            id = ++_lastId;
         }
 
         // Le segment est forcé sur le disque et rangé dans segments/ hors du
@@ -319,21 +322,30 @@ public sealed class OperationJournal
         // sérialise pas ses écritures est refusé, sans rien changer : une
         // seconde passe pendant celle-ci par _applying, une annulation ou un
         // retour pendant celle-ci par la seconde vérification.
+        //
+        // Le numéro est pris dès le premier verrou, parce que le segment est
+        // rangé sous ce nom avant le second : une passe refusée au second
+        // garde le sien, et son fichier, que l'app supprime en l'abandonnant.
+        // Une passe suivante qui reprendrait ce numéro écraserait ce fichier,
+        // et le perdrait à cet abandon. Seule une passe qui n'a rien rangé
+        // rend son numéro.
         PassInfo info;
+        bool published = false;
         try
         {
             var segment = batch.Segment;
             segment.WriteId(id);
             segment.MovedTo(_buffer.Store.Publish(segment.Blob, $"{id:D8}.seg"));
+            published = true;
             lock (_gate)
             {
                 Check(batch);
-                if (_lastId + 1 != id) throw new InvalidOperationException(ConcurrentWrite);
+                // aucune autre passe n'a pris de numéro depuis le premier verrou
+                if (_lastId != id) throw new InvalidOperationException(ConcurrentWrite);
                 info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
                 var entry = new Entry(info, segment);
 
                 int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
-                _lastId = id;
                 batch.Id = id;
                 batch.Applied = true;
                 var dropped = _redo.Select(e => e.Segment.Blob).ToList();
@@ -350,7 +362,12 @@ public sealed class OperationJournal
         }
         finally
         {
-            lock (_gate) _applying = false;
+            lock (_gate)
+            {
+                _applying = false;
+                // rien n'a été rangé sous ce numéro (le disque a refusé la passe avant) : la suivante le reprend
+                if (!published && _lastId == id) _lastId = id - 1;
+            }
         }
         return info;
     }
