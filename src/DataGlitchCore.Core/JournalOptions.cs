@@ -31,6 +31,17 @@ public sealed class JournalOptions
     public Func<long>? DiskBudget { get; init; }
 
     /// <summary>
+    /// Attend les suppressions en cours des autres sessions
+    /// (<see cref="SessionStore{TSession}.WaitForDeletionsAsync"/>). Ce qu'un
+    /// retour à l'original ou une passe abandonnent est supprimé en tâche de
+    /// fond, et compte dans la place de sa session jusque-là : sous un budget
+    /// global, il réduit celui des autres. Avant de refuser une passe faute de
+    /// place, le journal attend cette fonction, une fois, hors de son verrou,
+    /// puis recompte. Sans fonction, la passe est refusée sans attendre.
+    /// </summary>
+    public Func<Task>? WaitForOtherDeletions { get; init; }
+
+    /// <summary>
     /// Fusionne les <see cref="PassInfo.AppData"/> de passes qui entrent dans
     /// la base, de la plus ancienne à la plus récente ; la première est celle
     /// de la base, s'il y en a déjà une. Le résultat devient

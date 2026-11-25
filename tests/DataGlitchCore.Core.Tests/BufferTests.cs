@@ -92,7 +92,7 @@ public sealed class BufferTests : IDisposable
     }
 
     [Fact]
-    public void Applied_Passes_Live_In_Segments_And_Go_With_Redo_And_Reset()
+    public async Task Applied_Passes_Live_In_Segments_And_Go_With_Redo_And_Reset()
     {
         using var buf = OpenFile(Ramp(50_000));
         var journal = new OperationJournal(buf);
@@ -100,13 +100,15 @@ public sealed class BufferTests : IDisposable
         Assert.Equal(["00000001.seg", "00000002.seg", "00000003.seg"], Files("segments"));
         Assert.Empty(Files("tmp"));
 
-        // annuler garde le segment, à rétablir ; une nouvelle passe le supprime
+        // annuler garde le segment, à rétablir ; une nouvelle passe le supprime, en tâche de fond
         journal.Undo();
         Assert.Equal(3, Files("segments").Length);
         journal.Apply(DestructionEngine.BuildBatch(buf, Xor(9)));
+        await journal.WaitForMergesAsync();
         Assert.Equal(["00000001.seg", "00000002.seg", "00000004.seg"], Files("segments"));
 
         journal.ResetAll();
+        await journal.WaitForMergesAsync();
         Assert.Empty(Files("segments"));
         Assert.Equal(buf.Original.ReadAll(), buf.Current.ReadAll());
     }
@@ -157,9 +159,11 @@ public sealed class BufferTests : IDisposable
         Assert.Equal(changed, journal.ChangedBytes(0, buf.Length));
         Assert.Equal(files, ((MemoryBlobStore)buf.Store).Names.Order().ToArray());
 
-        // et le journal repart : une passe suivante s'applique normalement
-        journal.Apply(DestructionEngine.BuildBatch(buf, Xor(3)));
+        // et le journal repart : une passe suivante s'applique normalement, sous le numéro
+        // que la passe en échec n'a rangé nulle part
+        var next = journal.Apply(DestructionEngine.BuildBatch(buf, Xor(3)));
         Assert.Equal(2, journal.History.Count);
+        Assert.Equal(2, next.Id);
     }
 
     // ---- réserve de descripteurs (R3) ----

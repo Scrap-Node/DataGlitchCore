@@ -222,6 +222,96 @@ public sealed class SessionStoreTests : IDisposable
         Assert.Equal(29, b.Journal.MergedPasses);
     }
 
+    // ---- ce que les autres sessions suppriment encore en tâche de fond ----
+
+    /// <summary>
+    /// Une session qui vient de revenir à l'original : ses segments comptent
+    /// encore dans sa place, et leur suppression est retenue jusqu'à
+    /// <see cref="ManualResetEventSlim.Set"/>. Rend la place qu'elle libérera.
+    /// </summary>
+    private static long ResetWithDeletionsHeld(BufferSession session, ManualResetEventSlim release)
+    {
+        for (int i = 0; i < 4; i++)
+            session.Journal.Apply(DestructionEngine.BuildBatch(session.Buffer, new DestructionOptions { Seed = i, Density = 0.3, BlockSize = 16 }));
+        long before = session.Journal.DiskBytes;
+        int held = 0;
+        session.Journal.DeleteHook = _ =>
+        {
+            Interlocked.Increment(ref held);
+            release.Wait(TimeSpan.FromSeconds(30));
+        };
+        session.Journal.ResetAll();
+        Assert.True(SpinWait.SpinUntil(() => Volatile.Read(ref held) > 0, TimeSpan.FromSeconds(30)));
+        Assert.Equal(before, session.Journal.DiskBytes);
+        return before - session.Buffer.Length;
+    }
+
+    [Fact]
+    public async Task A_Pass_Waits_For_What_Another_Session_Is_Still_Deleting_Instead_Of_Being_Refused()
+    {
+        var data = new byte[64 * 1024];
+        using var store = new SessionStore<BufferSession>(StoreOptions.Defaults(_root) with { DiskBudgetBytes = 100 * data.Length }, _time);
+        var other = AddBuffer(store, data);
+        var mine = AddBuffer(store, data);
+        var release = new ManualResetEventSlim(false);
+        try
+        {
+            long freed = ResetWithDeletionsHeld(other, release);
+
+            // la passe ne tient qu'une fois supprimés les segments de l'autre session
+            var options = new DestructionOptions { Seed = 9, Density = 0.3, BlockSize = 16 };
+            long needed = mine.Journal.DiskBytes + DestructionEngine.EstimateSegmentBytes(mine.Buffer, options, DestructionMask.WholeBuffer)
+                        + BaseLayer.DenseBytes(mine.Buffer);
+            store.Options = store.Options with { DiskBudgetBytes = needed + data.Length + freed / 2 };
+            Assert.True(store.BudgetFor(mine.Id) < needed);
+
+            var build = Task.Run(() => DestructionEngine.BuildBatch(mine.Buffer, options));
+            await Task.Delay(200);
+            Assert.False(build.IsCompleted);
+            release.Set();
+            using var batch = await build.WaitAsync(TimeSpan.FromSeconds(30));
+            mine.Journal.Apply(batch);
+            Assert.Single(mine.Journal.History);
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task An_Import_Waits_For_What_A_Session_Is_Still_Deleting_Instead_Of_Closing_One()
+    {
+        var data = new byte[64 * 1024];
+        using var store = new SessionStore<BufferSession>(StoreOptions.Defaults(_root) with { DiskBudgetBytes = 100 * data.Length }, _time);
+        var old = AddBuffer(store, data);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        var recent = AddBuffer(store, data);
+        var release = new ManualResetEventSlim(false);
+        try
+        {
+            long freed = ResetWithDeletionsHeld(old, release);
+
+            // l'import ne tient qu'une fois supprimés les segments de la session revenue à l'original
+            const long import = 1000;
+            store.Options = store.Options with { DiskBudgetBytes = 2 * data.Length + import + freed / 2 };
+            var reserve = Task.Run(() => store.TryReserve(import));
+            await Task.Delay(200);
+            Assert.False(reserve.IsCompleted);
+            release.Set();
+            Assert.True(await reserve.WaitAsync(TimeSpan.FromSeconds(30)));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        // aucune session n'a été fermée pour une place qui se libérait déjà
+        Assert.Equal(2, store.Count);
+        Assert.False(old.Disposed);
+        Assert.False(recent.Disposed);
+    }
+
     private BufferSession AddBuffer(SessionStore<BufferSession> store, byte[] data, int maxUndo = 20)
     {
         var (id, dir) = store.CreateDirectory();
@@ -229,7 +319,12 @@ public sealed class SessionStoreTests : IDisposable
         File.WriteAllBytes(source, data);
         var buffer = FileBuffer.Open(source, dir, new FileBufferOptions { ChunkShift = 12, Durable = false });
         var session = new BufferSession(id, dir, buffer);
-        session.Journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = maxUndo, DiskBudget = () => store.BudgetFor(id) });
+        session.Journal = new OperationJournal(buffer, new JournalOptions
+        {
+            MaxUndoSteps = maxUndo,
+            DiskBudget = () => store.BudgetFor(id),
+            WaitForOtherDeletions = () => store.WaitForDeletionsAsync(),
+        });
         return store.Add(session);
     }
 
@@ -273,9 +368,16 @@ public sealed class SessionStoreTests : IDisposable
         public long LastUse { get; set; }
         public FileBuffer Buffer { get; } = buffer;
         public OperationJournal Journal { get; set; } = null!;
+        public bool Disposed { get; private set; }
         public long DiskBytes => Journal.DiskBytes;
         public long DropCaches() => 0;
-        public void Dispose() => Buffer.Dispose();
+        public Task WaitForDeletionsAsync(CancellationToken ct) => Journal.WaitForDeletionsAsync(ct);
+
+        public void Dispose()
+        {
+            Disposed = true;
+            Buffer.Dispose();
+        }
     }
 }
 

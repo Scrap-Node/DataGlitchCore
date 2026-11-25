@@ -1,0 +1,420 @@
+{
+  "MaxUndoSteps": 20,
+  "LowPriorityMerges": true,
+  "Label": "verrou-apres-1",
+  "Host": {
+    "Mod\u00E8le": "MacBook Air",
+    "Identifiant": "Mac16,12",
+    "Puce": "Apple M4",
+    "C\u0153urs": "10 (4 Performance and 6 Efficiency)",
+    "RAM": "16 GB",
+    "macOS": "27.2.1 (26B131)",
+    ".NET": ".NET 9.0.17"
+  },
+  "CheckpointPasses": [
+    1,
+    10,
+    20,
+    30
+  ],
+  "MaxGb": 9,
+  "Commit": "9957698",
+  "Version": "0.7.1",
+  "BackgroundMerges": true,
+  "Scenarios": [
+    {
+      "File": "/tmp/dgc-audit-data/bench/bench-256.wav",
+      "Bytes": 268435456,
+      "Start": {
+        "LiveBytes": 101768,
+        "HeapBytes": 55336,
+        "FootprintBytes": 24216392
+      },
+      "Open": {
+        "Ms": 0.9063,
+        "PeakFootprintDeltaBytes": 65536,
+        "AllocatedBytes": 3152
+      },
+      "Opened": {
+        "LiveBytes": 109776,
+        "HeapBytes": 60768,
+        "FootprintBytes": 24413000
+      },
+      "Passes": [
+        {
+          "Number": 1,
+          "BuildMs": 136.4874,
+          "ApplyMs": 20.739,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 2,
+          "BuildMs": 121.3732,
+          "ApplyMs": 233.4498,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 3,
+          "BuildMs": 172.4865,
+          "ApplyMs": 8.0864,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 4,
+          "BuildMs": 148.1922,
+          "ApplyMs": 9.6338,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 5,
+          "BuildMs": 118.8704,
+          "ApplyMs": 20.1038,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 6,
+          "BuildMs": 107.7074,
+          "ApplyMs": 79.6775,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 7,
+          "BuildMs": 126.7013,
+          "ApplyMs": 34.5395,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 8,
+          "BuildMs": 127.1318,
+          "ApplyMs": 16.7109,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 9,
+          "BuildMs": 151.1502,
+          "ApplyMs": 69.1805,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 10,
+          "BuildMs": 175.8106,
+          "ApplyMs": 15.4271,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 11,
+          "BuildMs": 264.5347,
+          "ApplyMs": 8.0868,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 12,
+          "BuildMs": 360.5322,
+          "ApplyMs": 42.089,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 13,
+          "BuildMs": 635.3755,
+          "ApplyMs": 24.6334,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 14,
+          "BuildMs": 891.9527,
+          "ApplyMs": 30.1188,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 15,
+          "BuildMs": 830.263,
+          "ApplyMs": 13.5005,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 16,
+          "BuildMs": 360.8938,
+          "ApplyMs": 14.6844,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 17,
+          "BuildMs": 374.3252,
+          "ApplyMs": 27.0133,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 18,
+          "BuildMs": 388.1791,
+          "ApplyMs": 12.7816,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 19,
+          "BuildMs": 417.6876,
+          "ApplyMs": 9.8152,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 20,
+          "BuildMs": 441.6167,
+          "ApplyMs": 9.5406,
+          "MergingBefore": false,
+          "MergedPasses": 0
+        },
+        {
+          "Number": 21,
+          "BuildMs": 455.6848,
+          "ApplyMs": 15.251,
+          "MergingBefore": false,
+          "MergedPasses": 1
+        },
+        {
+          "Number": 22,
+          "BuildMs": 522.104,
+          "ApplyMs": 10.01,
+          "MergingBefore": true,
+          "MergedPasses": 2
+        },
+        {
+          "Number": 23,
+          "BuildMs": 478.4633,
+          "ApplyMs": 10.1087,
+          "MergingBefore": true,
+          "MergedPasses": 3
+        },
+        {
+          "Number": 24,
+          "BuildMs": 472.196,
+          "ApplyMs": 12.6243,
+          "MergingBefore": true,
+          "MergedPasses": 4
+        },
+        {
+          "Number": 25,
+          "BuildMs": 526.8509,
+          "ApplyMs": 11.7098,
+          "MergingBefore": true,
+          "MergedPasses": 5
+        },
+        {
+          "Number": 26,
+          "BuildMs": 482.2695,
+          "ApplyMs": 15.7263,
+          "MergingBefore": true,
+          "MergedPasses": 6
+        },
+        {
+          "Number": 27,
+          "BuildMs": 461.9887,
+          "ApplyMs": 21.4985,
+          "MergingBefore": true,
+          "MergedPasses": 7
+        },
+        {
+          "Number": 28,
+          "BuildMs": 454.7204,
+          "ApplyMs": 17.8945,
+          "MergingBefore": true,
+          "MergedPasses": 8
+        },
+        {
+          "Number": 29,
+          "BuildMs": 463.6087,
+          "ApplyMs": 16.8255,
+          "MergingBefore": true,
+          "MergedPasses": 9
+        },
+        {
+          "Number": 30,
+          "BuildMs": 452.0136,
+          "ApplyMs": 12.6046,
+          "MergingBefore": true,
+          "MergedPasses": 10
+        }
+      ],
+      "Checkpoints": [
+        {
+          "Passes": 1,
+          "Memory": {
+            "LiveBytes": 200704,
+            "HeapBytes": 129448,
+            "FootprintBytes": 30704456
+          },
+          "ZoomedRead": {
+            "Ms": 1.0637,
+            "PeakFootprintDeltaBytes": 2277400,
+            "AllocatedBytes": 2750352
+          },
+          "WholeRead": {
+            "Ms": 25.7567,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 1049480
+          },
+          "Export": {
+            "Ms": 160.0424,
+            "PeakFootprintDeltaBytes": 49152,
+            "AllocatedBytes": 1204536
+          },
+          "Undo": {
+            "Ms": 0.1438,
+            "PeakFootprintDeltaBytes": 32768,
+            "AllocatedBytes": 248
+          },
+          "Redo": {
+            "Ms": 0.1187,
+            "PeakFootprintDeltaBytes": 32768,
+            "AllocatedBytes": 264
+          },
+          "Merging": false,
+          "MergedPasses": 0,
+          "Base": "aucune",
+          "DiskBytes": 315252960
+        },
+        {
+          "Passes": 10,
+          "Memory": {
+            "LiveBytes": 683176,
+            "HeapBytes": 346112,
+            "FootprintBytes": 33096520
+          },
+          "ZoomedRead": {
+            "Ms": 1.8633,
+            "PeakFootprintDeltaBytes": 2179096,
+            "AllocatedBytes": 2684792
+          },
+          "WholeRead": {
+            "Ms": 109.1453,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 1052560
+          },
+          "Export": {
+            "Ms": 206.431,
+            "PeakFootprintDeltaBytes": 16384,
+            "AllocatedBytes": 1060288
+          },
+          "Undo": {
+            "Ms": 0.0317,
+            "PeakFootprintDeltaBytes": 16384,
+            "AllocatedBytes": 328
+          },
+          "Redo": {
+            "Ms": 0.0165,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 336
+          },
+          "Merging": false,
+          "MergedPasses": 0,
+          "Base": "aucune",
+          "DiskBytes": 735445668
+        },
+        {
+          "Passes": 20,
+          "Memory": {
+            "LiveBytes": 797520,
+            "HeapBytes": 403296,
+            "FootprintBytes": 33866568
+          },
+          "ZoomedRead": {
+            "Ms": 3.171,
+            "PeakFootprintDeltaBytes": 2179096,
+            "AllocatedBytes": 2684792
+          },
+          "WholeRead": {
+            "Ms": 231.6196,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 1056200
+          },
+          "Export": {
+            "Ms": 370.9429,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 1131936
+          },
+          "Undo": {
+            "Ms": 0.0375,
+            "PeakFootprintDeltaBytes": 32768,
+            "AllocatedBytes": 408
+          },
+          "Redo": {
+            "Ms": 0.0227,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 416
+          },
+          "Merging": false,
+          "MergedPasses": 0,
+          "Base": "aucune",
+          "DiskBytes": 1202182680
+        },
+        {
+          "Passes": 30,
+          "Memory": {
+            "LiveBytes": 2245752,
+            "HeapBytes": 1651840,
+            "FootprintBytes": 37749576
+          },
+          "ZoomedRead": {
+            "Ms": 3.8822,
+            "PeakFootprintDeltaBytes": 2686976,
+            "AllocatedBytes": 2685144
+          },
+          "WholeRead": {
+            "Ms": 267.607,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 1056200
+          },
+          "Export": {
+            "Ms": 358.8296,
+            "PeakFootprintDeltaBytes": 16384,
+            "AllocatedBytes": 1062704
+          },
+          "Undo": {
+            "Ms": 0.0311,
+            "PeakFootprintDeltaBytes": 16384,
+            "AllocatedBytes": 408
+          },
+          "Redo": {
+            "Ms": 0.0192,
+            "PeakFootprintDeltaBytes": 0,
+            "AllocatedBytes": 416
+          },
+          "Merging": true,
+          "MergedPasses": 10,
+          "Base": "dense",
+          "DiskBytes": 1470600856
+        }
+      ],
+      "MergesSettled": {
+        "Ms": 1.2935,
+        "PeakFootprintDeltaBytes": 32768,
+        "AllocatedBytes": 384
+      },
+      "Reset": {
+        "Ms": 0.7967,
+        "PeakFootprintDeltaBytes": 0,
+        "AllocatedBytes": 1088
+      },
+      "Stopped": null,
+      "LoadBefore": 4.82177734375,
+      "LoadAfter": 4.775390625
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 namespace DataGlitchCore.Core;
 
 /// <summary>Une passe de l'historique, telle que l'app l'affiche et la range.</summary>
-/// <param name="Id">Numéro donné à l'application, croissant dans la session.</param>
+/// <param name="Id">Numéro donné à l'application, croissant dans la session. Une passe refusée
+/// faute d'écritures sérialisées, une fois rangée, garde le sien : le suivant le saute.</param>
 /// <param name="Label">Libellé de la passe.</param>
 /// <param name="EditCount">Nombre d'écritures.</param>
 /// <param name="BytesChanged">Total des octets de ces écritures.</param>
@@ -33,7 +34,9 @@ public sealed record PassInfo(long Id, string Label, long EditCount, long BytesC
 ///
 /// Les écritures (passes, annulations, retours) ne sont pas concurrentes entre
 /// elles : l'appelant les sérialise. La tâche de fond, elle, est synchronisée
-/// par le journal.
+/// par le journal. Ce que l'historique ne référence plus (les passes à
+/// rétablir qu'une passe abandonne, tout ce qu'un retour à l'original efface)
+/// est supprimé en tâche de fond, et compté sur le disque jusque-là.
 /// </summary>
 public sealed class OperationJournal
 {
@@ -46,6 +49,8 @@ public sealed class OperationJournal
     // fusionnées pour l'historique, encore des couches de l'état, les plus anciennes d'abord
     private readonly List<Entry> _merging = new();
     private BaseLayer? _base;
+    // le dernier numéro pris par une passe, appliquée ou refusée une fois rangée dans segments/ sous ce nom :
+    // jamais repris, pas même après un retour à l'original, dont les segments se suppriment en tâche de fond
     private long _lastId;
 
     private long _mergedPasses;
@@ -60,6 +65,15 @@ public sealed class OperationJournal
     private readonly List<IBlob> _dropping = new();
     private long _lastEstimate;   // la place demandée par la dernière passe acceptée
     private Exception? _mergeError;
+
+    // ce que l'historique ne référence plus (passes à rétablir abandonnées, retour à l'original) : supprimé en
+    // tâche de fond, compté sur le disque jusqu'à sa suppression
+    private readonly List<IBlob> _deleting = new();
+    private Task _deleter = Task.CompletedTask;
+    private bool _deleterRunning;
+
+    // une passe se range dans segments/, hors du verrou (Apply)
+    private bool _applying;
 
     public OperationJournal(FileBuffer buffer, JournalOptions? options = null)
     {
@@ -166,7 +180,8 @@ public sealed class OperationJournal
     /// <summary>
     /// La place de la session sur le disque : l'original, la base et les
     /// segments, à rétablir compris. Pendant une fusion, l'ancienne base et la
-    /// nouvelle comptent toutes les deux, la nouvelle à sa taille au pire.
+    /// nouvelle comptent toutes les deux, la nouvelle à sa taille au pire. Ce
+    /// qui attend sa suppression compte jusqu'à ce qu'elle soit faite.
     /// </summary>
     public long DiskBytes
     {
@@ -177,9 +192,10 @@ public sealed class OperationJournal
     }
 
     /// <summary>
-    /// Attend que les fusions prévues soient écrites, et les fichiers
-    /// fusionnés supprimés. Pour les tests, les bancs et un arrêt propre :
-    /// l'app n'en a pas besoin, l'état est juste à tout moment.
+    /// Attend que les fusions prévues soient écrites, et supprimés les
+    /// fichiers qu'elles remplacent ou que l'historique ne référence plus.
+    /// Pour les tests, les bancs et un arrêt propre : l'app n'en a pas besoin,
+    /// l'état est juste à tout moment.
     /// </summary>
     /// <exception cref="IOException">La fusion a échoué ; l'état reste juste.</exception>
     public async Task WaitForMergesAsync(CancellationToken ct = default)
@@ -195,7 +211,7 @@ public sealed class OperationJournal
                 }
                 else
                 {
-                    if (_merging.Count == 0) return;
+                    if (_merging.Count == 0) break;
                     if (_mergeError is { } error)
                         throw new IOException($"La fusion de l'historique a échoué : {error.Message}", error);
                     StartWorker();
@@ -204,7 +220,32 @@ public sealed class OperationJournal
             }
             await worker.WaitAsync(ct).ConfigureAwait(false);
         }
+        await WaitForDeletionsAsync(ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Attend que soit supprimé ce que l'historique ne référence plus (passes
+    /// à rétablir abandonnées, retour à l'original), qui compte dans
+    /// <see cref="DiskBytes"/> jusque-là. N'attend pas les fusions. À relayer
+    /// par <see cref="IStoredSession.WaitForDeletionsAsync"/> : sous un budget
+    /// global, cette place réduit celui des autres sessions tant qu'elle n'est
+    /// pas libérée.
+    /// </summary>
+    public async Task WaitForDeletionsAsync(CancellationToken ct = default)
+    {
+        while (true)
+        {
+            Task deleter;
+            lock (_gate)
+            {
+                if (!_deleterRunning) return;
+                deleter = _deleter;
+            }
+            await deleter.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    internal void WaitForDeletions() => WaitForDeletionsAsync().GetAwaiter().GetResult();
 
     /// <summary>
     /// Vérifie qu'une passe d'environ <paramref name="segmentBytes"/> octets
@@ -215,17 +256,21 @@ public sealed class OperationJournal
     /// deux ; si la passe ne tient qu'une fois cette fusion aboutie, on
     /// l'attend. Le moteur l'appelle avant de construire une passe, avec son
     /// estimation (<see cref="DestructionEngine.EstimateSegmentBytes"/>). Sans
-    /// budget, ne fait rien.
+    /// budget, ne fait rien. Avant de refuser la passe, on attend aussi, une
+    /// fois, les suppressions des autres sessions
+    /// (<see cref="JournalOptions.WaitForOtherDeletions"/>), puis on recompte.
     /// </summary>
     /// <exception cref="DiskBudgetExceededException">La passe ne tiendrait pas : rien n'a été modifié.</exception>
     public void EnsureRoom(long segmentBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(segmentBytes);
+        bool othersWaited = false;
         while (true)
         {
             // le budget se lit hors du verrou : un budget global lit la place des autres sessions, sous leurs verrous
             if (Budget() is not long budget) return;
-            Task running;
+            Task? running = null;
+            Func<Task>? others = null;
             lock (_gate)
             {
                 long needed = Usage() + segmentBytes + BaseLayer.DenseBytes(_buffer);
@@ -234,13 +279,22 @@ public sealed class OperationJournal
                     _lastEstimate = segmentBytes;
                     return;
                 }
-                if (_worker is not { IsCompleted: false } worker) throw new DiskBudgetExceededException(needed, budget);
-                running = worker;
+                // une fusion en cours, ou des suppressions, libéreront de la place en aboutissant
+                if (_worker is { IsCompleted: false } worker) running = worker;
+                else if (_deleterRunning) running = _deleter;
+                // celles des autres sessions aussi, que le budget global leur compte encore
+                else if (!othersWaited && _options.WaitForOtherDeletions is { } wait) others = wait;
+                else throw new DiskBudgetExceededException(needed, budget);
             }
-            // une fusion en cours libérera de la place en aboutissant
+            if (others is not null)
+            {
+                // hors du verrou : elles prennent celui de leur journal, et un autre journal peut attendre le nôtre
+                othersWaited = true;
+                running = others();
+            }
             try
             {
-                running.Wait();
+                running!.Wait();
             }
             catch (AggregateException)
             {
@@ -263,42 +317,92 @@ public sealed class OperationJournal
     public PassInfo Apply(DestructionBatch batch, string? appData = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
-        List<IBlob> dropped;
-        PassInfo info;
         long? budget = Budget();
+        long id;
         lock (_gate)
         {
-            if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
-            if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
-            if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
-            // une fusion qui aboutit change l'agencement de l'état, pas son numéro
-            if (batch.BaseState.Number != _buffer.State.Number)
-                throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
+            Check(batch);
+            if (_applying) throw new InvalidOperationException(ConcurrentWrite);
+            _applying = true;
+            id = ++_lastId;
+        }
 
-            long id = _lastId + 1;
+        // Le segment est forcé sur le disque et rangé dans segments/ hors du
+        // verrou : l'écriture forcée prend jusqu'à quelques centaines de ms, et
+        // le verrou bloquait pendant ce temps tout ce qui lit le journal :
+        // l'interface (History, CanUndo), la bascule d'une fusion, et les
+        // autres sessions qui comptent leur budget (SessionStore.BudgetFor).
+        //
+        // C'est sûr parce que les écritures du journal (Apply, Undo, Redo,
+        // ResetAll) ne sont pas concurrentes entre elles : l'appelant les
+        // sérialise (le Gate des apps). Entre les deux verrous, seule la tâche
+        // de fond agit, et une fusion ne change ni le numéro de l'état ni
+        // _lastId : ce qui a été vérifié reste vrai. Un appelant qui ne
+        // sérialise pas ses écritures est refusé, sans rien changer : une
+        // seconde passe pendant celle-ci par _applying, une annulation ou un
+        // retour pendant celle-ci par la seconde vérification.
+        //
+        // Le numéro est pris dès le premier verrou, parce que le segment est
+        // rangé sous ce nom avant le second : une passe refusée au second
+        // garde le sien, et son fichier, que l'app supprime en l'abandonnant.
+        // Une passe suivante qui reprendrait ce numéro écraserait ce fichier,
+        // et le perdrait à cet abandon. Seule une passe qui n'a rien rangé
+        // rend son numéro.
+        PassInfo info;
+        bool published = false;
+        try
+        {
             var segment = batch.Segment;
             segment.WriteId(id);
             segment.MovedTo(_buffer.Store.Publish(segment.Blob, $"{id:D8}.seg"));
-            info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
-            var entry = new Entry(info, segment);
+            published = true;
+            lock (_gate)
+            {
+                Check(batch);
+                // aucune autre passe n'a pris de numéro depuis le premier verrou
+                if (_lastId != id) throw new InvalidOperationException(ConcurrentWrite);
+                info = new PassInfo(id, batch.Label, batch.EditCount, batch.BytesChanged, batch.FirstOffset, batch.LastOffset, appData);
+                var entry = new Entry(info, segment);
 
-            int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
-            _lastId = id;
-            batch.Id = id;
-            batch.Applied = true;
-            dropped = _redo.Select(e => e.Segment.Blob).ToList();
-            _redo.Clear();
-            _undo.Add(entry);
-            _buffer.AddDiffs(segment, +1);
-            if (count > 0) Schedule(count);
-            // après un échec, chaque passe relance la fusion de ce qui attend encore
-            StartWorker();
-            Publish();
+                int count = MergeCount([.. _undo.Select(e => Weight.Of(e.Segment)), Weight.Of(segment)], budget);
+                batch.Id = id;
+                batch.Applied = true;
+                var dropped = _redo.Select(e => e.Segment.Blob).ToList();
+                _redo.Clear();
+                _undo.Add(entry);
+                _buffer.AddDiffs(segment, +1);
+                if (count > 0) Schedule(count);
+                // après un échec, chaque passe relance la fusion de ce qui attend encore
+                StartWorker();
+                Publish();
+                // ensuite seulement, ce que l'état ne référence plus
+                Delete(dropped);
+            }
         }
-
-        // ensuite seulement, ce que l'état ne référence plus
-        foreach (var blob in dropped) _buffer.Store.Delete(blob);
+        finally
+        {
+            lock (_gate)
+            {
+                _applying = false;
+                // rien n'a été rangé sous ce numéro (le disque a refusé la passe avant) : la suivante le reprend
+                if (!published && _lastId == id) _lastId = id - 1;
+            }
+        }
         return info;
+    }
+
+    private const string ConcurrentWrite =
+        "Une autre écriture du journal a lieu en même temps : passes, annulations et retours doivent être sérialisés. Rien n'a été modifié.";
+
+    /// <summary>La passe peut-elle s'appliquer à l'état courant ? Sous le verrou.</summary>
+    private void Check(DestructionBatch batch)
+    {
+        if (batch.Buffer != _buffer) throw new InvalidOperationException("Cette passe a été construite sur un autre fichier.");
+        if (batch.Applied) throw new InvalidOperationException("Cette passe est déjà appliquée.");
+        if (batch.Disposed) throw new InvalidOperationException("Cette passe a été abandonnée.");
+        // une fusion qui aboutit change l'agencement de l'état, pas son numéro
+        if (batch.BaseState.Number != _buffer.State.Number)
+            throw new InvalidOperationException("Cette passe a été construite sur un autre état que l'état courant : rien n'a été modifié.");
     }
 
     public PassInfo? Undo()
@@ -337,10 +441,9 @@ public sealed class OperationJournal
     public void ResetAll()
     {
         StopWorker();
-        List<IBlob> files;
         lock (_gate)
         {
-            files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
             _undo.Clear();
             _redo.Clear();
             _merging.Clear();
@@ -351,8 +454,9 @@ public sealed class OperationJournal
             _mergeError = null;
             _buffer.SetState(_buffer.Store.Source, []);
             _buffer.ClearDiffs();
+            // en tâche de fond : revenir à l'original ne dépend plus de la place à libérer (critère 4)
+            Delete(files);
         }
-        foreach (var blob in files) _buffer.Store.Delete(blob);
     }
 
     /// <summary>
@@ -363,7 +467,12 @@ public sealed class OperationJournal
     public long ChangedBytes(long start, long length) => _buffer.ChangedBytes(start, length);
 
     /// <summary>Interrompt la fusion en cours et l'attend : le buffer se ferme. Les passes restent des couches.</summary>
-    internal void Shutdown() => StopWorker();
+    internal void Shutdown()
+    {
+        StopWorker();
+        // le store supprime le dossier de la session après : rien ne doit plus y être supprimé ensuite
+        WaitForDeletions();
+    }
 
     /// <summary>
     /// Pour les tests : appelée par la tâche de fond à chaque étape d'une
@@ -378,7 +487,7 @@ public sealed class OperationJournal
     {
         get
         {
-            lock (_gate) return Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).ToList();
+            lock (_gate) return Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_deleting).ToList();
         }
     }
 
@@ -392,9 +501,10 @@ public sealed class OperationJournal
         lock (_gate)
         {
             // ce qu'une fusion a remplacé compte tant qu'il est sur le disque
-            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_dropping).ToList();
+            var files = Segments().Select(e => e.Segment.Blob).Concat(_base?.Files ?? []).Concat(_dropping).Concat(_deleting).ToList();
             long disk = Usage() + _redo.Sum(e => e.Segment.Blob.Length);
-            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0 || _dropping.Count > 0, _reserved, disk);
+            return new JournalSnapshot(_base, _buffer.State, files, _merging.Count > 0 || _dropping.Count > 0, _reserved, disk,
+                                       _deleting.Count > 0);
         }
     }
 
@@ -579,6 +689,59 @@ public sealed class OperationJournal
         }
     }
 
+    // ---------- suppressions en tâche de fond ----------
+
+    /// <summary>
+    /// Confie à la tâche de suppression ce que l'historique ne référence plus.
+    /// Sous le verrou. Les fichiers comptent sur le disque jusqu'à leur
+    /// suppression. Un plantage entre-temps les laisse sur le disque : le
+    /// ménage du lot 5 supprime ce que le manifeste ne référence pas.
+    /// </summary>
+    private void Delete(List<IBlob> files)
+    {
+        if (files.Count == 0) return;
+        _deleting.AddRange(files);
+        if (_deleterRunning) return;
+        _deleterRunning = true;
+        _deleter = Task.Run(DeleteLoop);
+    }
+
+    private void DeleteLoop()
+    {
+        while (true)
+        {
+            IBlob[] files;
+            lock (_gate)
+            {
+                if (_deleting.Count == 0)
+                {
+                    _deleterRunning = false;
+                    return;
+                }
+                files = [.. _deleting];
+            }
+            foreach (var blob in files)
+            {
+                try
+                {
+                    DeleteHook?.Invoke(blob.Name);
+                    _buffer.Store.Delete(blob);
+                }
+                catch (Exception)
+                {
+                    // comme Store.Delete : un fichier qui reste n'est qu'un orphelin, que le ménage du lot 5 supprimera
+                }
+                finally
+                {
+                    lock (_gate) _deleting.Remove(blob);
+                }
+            }
+        }
+    }
+
+    /// <summary>Pour les tests : appelée avant chaque suppression en tâche de fond, elle peut la retenir.</summary>
+    internal Action<string>? DeleteHook { get; set; }
+
     /// <summary>Supprime ce qu'une fusion a remplacé ou abandonné, puis cesse de le compter.</summary>
     private void Drop(List<IBlob> files)
     {
@@ -632,7 +795,7 @@ public sealed class OperationJournal
     /// remplacé et qui n'est pas encore supprimé, les segments en fusion et annulables.
     /// </summary>
     private long Usage() =>
-        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _dropping.Sum(b => b.Length)
+        _buffer.Length + (_base?.DiskBytes ?? 0) + _reserved + _dropping.Sum(b => b.Length) + _deleting.Sum(b => b.Length)
         + _merging.Concat(_undo).Sum(e => e.Segment.Blob.Length);
 
     /// <summary>La place de la session, au pire, une fois écrite la base qui fusionne tout ce qui attend et les <paramref name="count"/> plus anciennes de <paramref name="active"/>.</summary>
@@ -681,7 +844,7 @@ public sealed class OperationJournal
 
 /// <summary>Le journal vu d'un coup, pour les tests (<see cref="OperationJournal.Snapshot"/>).</summary>
 internal sealed record JournalSnapshot(BaseLayer? Base, BufferState State, IReadOnlyList<IBlob> Files, bool Merging,
-                                       long ReservedBytes, long DiskBytes);
+                                       long ReservedBytes, long DiskBytes, bool Deleting = false);
 
 /// <summary>
 /// La tâche de fond passe après l'app : son fil a une priorité basse, et sous
