@@ -30,6 +30,18 @@ public interface IStoredSession : IDisposable
     /// qu'on libère sous pression. Rend les octets libérés.
     /// </summary>
     long DropCaches();
+
+    /// <summary>
+    /// Attend que soit supprimé ce que <see cref="DiskBytes"/> compte encore
+    /// sans que la session s'en serve : ce que son journal supprime en tâche
+    /// de fond (<see cref="OperationJournal.WaitForDeletionsAsync"/>). Le store
+    /// l'attend avant de libérer des caches ou de fermer des sessions faute de
+    /// place, et les journaux avant de refuser une passe
+    /// (<see cref="SessionStore{TSession}.WaitForDeletionsAsync"/>). Ne doit pas
+    /// prendre le verrou des écritures de l'app (son Gate) : une passe d'une
+    /// autre session l'attend en tenant le sien. Par défaut, rien à attendre.
+    /// </summary>
+    Task WaitForDeletionsAsync(CancellationToken ct = default) => Task.CompletedTask;
 }
 
 /// <summary>
@@ -163,14 +175,29 @@ public sealed class SessionStore<TSession> : IDisposable where TSession : class,
     /// Le budget disque d'une session : le budget global, moins ce que
     /// prennent les autres. À donner à son journal
     /// (<see cref="JournalOptions.DiskBudget"/>) : une passe s'y mesure, fusion
-    /// en cours et place d'une base comprises.
+    /// en cours et place d'une base comprises. Avec
+    /// <see cref="WaitForDeletionsAsync"/> (<see cref="JournalOptions.WaitForOtherDeletions"/>),
+    /// pour que ce que les autres suppriment encore ne fasse pas refuser la passe.
     /// </summary>
     public long BudgetFor(string id) =>
         Options.DiskBudgetBytes - _sessions.Values.Where(s => s.Id != id).Sum(s => s.DiskBytes);
 
     /// <summary>
+    /// Attend les suppressions en cours de toutes les sessions
+    /// (<see cref="IStoredSession.WaitForDeletionsAsync"/>) : la place qu'elles
+    /// comptent encore sans s'en servir. N'attend aucune requête.
+    /// </summary>
+    public async Task WaitForDeletionsAsync(CancellationToken ct = default)
+    {
+        foreach (var session in _sessions.Values)
+            await session.WaitForDeletionsAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Fait de la place pour <paramref name="bytes"/> octets, avant un import
-    /// (spec §8), dans le budget global et sur le disque. D'abord les caches
+    /// (spec §8), dans le budget global et sur le disque. D'abord, on attend
+    /// ce que les sessions suppriment encore en tâche de fond
+    /// (<see cref="IStoredSession.WaitForDeletionsAsync"/>) ; puis les caches
     /// des sessions, les moins récemment utilisées d'abord ; puis, pour un
     /// import, les sessions elles-mêmes, fermées et supprimées dans le même
     /// ordre. Pour une passe (<paramref name="requester"/> donné), on ne
@@ -183,6 +210,10 @@ public sealed class SessionStore<TSession> : IDisposable where TSession : class,
     public bool TryReserve(long bytes, string? requester = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        // ce que les sessions suppriment en tâche de fond compte jusqu'à sa suppression : on attend qu'elle soit
+        // faite avant de libérer des caches ou de fermer des sessions. Hors du verrou, que les suppressions ne
+        // prennent pas, mais qui retiendrait inutilement les autres appels.
+        if (!Fits(bytes)) WaitForDeletionsAsync().GetAwaiter().GetResult();
         lock (_evict)
         {
             if (Fits(bytes)) return true;

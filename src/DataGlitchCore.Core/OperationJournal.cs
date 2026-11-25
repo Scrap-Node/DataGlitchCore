@@ -223,8 +223,15 @@ public sealed class OperationJournal
         await WaitForDeletionsAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>Attend que soit supprimé ce que l'historique ne référence plus. Ne dépend pas des fusions.</summary>
-    internal async Task WaitForDeletionsAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Attend que soit supprimé ce que l'historique ne référence plus (passes
+    /// à rétablir abandonnées, retour à l'original), qui compte dans
+    /// <see cref="DiskBytes"/> jusque-là. N'attend pas les fusions. À relayer
+    /// par <see cref="IStoredSession.WaitForDeletionsAsync"/> : sous un budget
+    /// global, cette place réduit celui des autres sessions tant qu'elle n'est
+    /// pas libérée.
+    /// </summary>
+    public async Task WaitForDeletionsAsync(CancellationToken ct = default)
     {
         while (true)
         {
@@ -249,17 +256,21 @@ public sealed class OperationJournal
     /// deux ; si la passe ne tient qu'une fois cette fusion aboutie, on
     /// l'attend. Le moteur l'appelle avant de construire une passe, avec son
     /// estimation (<see cref="DestructionEngine.EstimateSegmentBytes"/>). Sans
-    /// budget, ne fait rien.
+    /// budget, ne fait rien. Avant de refuser la passe, on attend aussi, une
+    /// fois, les suppressions des autres sessions
+    /// (<see cref="JournalOptions.WaitForOtherDeletions"/>), puis on recompte.
     /// </summary>
     /// <exception cref="DiskBudgetExceededException">La passe ne tiendrait pas : rien n'a été modifié.</exception>
     public void EnsureRoom(long segmentBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(segmentBytes);
+        bool othersWaited = false;
         while (true)
         {
             // le budget se lit hors du verrou : un budget global lit la place des autres sessions, sous leurs verrous
             if (Budget() is not long budget) return;
-            Task running;
+            Task? running = null;
+            Func<Task>? others = null;
             lock (_gate)
             {
                 long needed = Usage() + segmentBytes + BaseLayer.DenseBytes(_buffer);
@@ -271,11 +282,19 @@ public sealed class OperationJournal
                 // une fusion en cours, ou des suppressions, libéreront de la place en aboutissant
                 if (_worker is { IsCompleted: false } worker) running = worker;
                 else if (_deleterRunning) running = _deleter;
+                // celles des autres sessions aussi, que le budget global leur compte encore
+                else if (!othersWaited && _options.WaitForOtherDeletions is { } wait) others = wait;
                 else throw new DiskBudgetExceededException(needed, budget);
+            }
+            if (others is not null)
+            {
+                // hors du verrou : elles prennent celui de leur journal, et un autre journal peut attendre le nôtre
+                othersWaited = true;
+                running = others();
             }
             try
             {
-                running.Wait();
+                running!.Wait();
             }
             catch (AggregateException)
             {
