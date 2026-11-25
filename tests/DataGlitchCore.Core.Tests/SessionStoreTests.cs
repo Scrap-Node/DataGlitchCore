@@ -167,7 +167,7 @@ public sealed class SessionStoreTests : IDisposable
     // ---- avec de vrais buffers : le budget global passe par les journaux ----
 
     [Fact]
-    public void A_Pass_Is_Refused_When_The_Other_Sessions_Leave_Too_Little_Of_The_Global_Budget()
+    public async Task A_Pass_Is_Refused_When_The_Other_Sessions_Leave_Too_Little_Of_The_Global_Budget()
     {
         var data = new byte[64 * 1024];
         // 8 fois le fichier pour deux sessions : chacune garde l'original, ses passes, et la place d'une base
@@ -182,7 +182,7 @@ public sealed class SessionStoreTests : IDisposable
         // l'autre session grossit : sous le budget global, elle fusionne pour garder sa marge
         for (int i = 0; i < 4; i++)
             big.Journal.Apply(DestructionEngine.BuildBatch(big.Buffer, new DestructionOptions { Seed = i, Density = 1, BlockSize = 64, FixedValue = (byte)i, Operator = DestructionOperator.Fixed }));
-        big.Journal.WaitForMergesAsync().Wait();
+        await big.Journal.WaitForMergesAsync();
         Assert.True(big.Journal.MergedPasses > 0);
 
         // une passe d'octets isolés (estimée à deux fois le fichier) ne tient plus dans ce qu'elle laisse

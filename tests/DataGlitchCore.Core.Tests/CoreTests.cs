@@ -458,4 +458,38 @@ public class CoreTests
         Assert.Equal(0.2, v.Start, precision: 9);
         Assert.Equal(0.8, v.End, precision: 9);
     }
+
+    [Theory]
+    [InlineData(double.NaN, 1.0)]
+    [InlineData(0.0, double.NaN)]
+    [InlineData(0.3, double.NaN)]
+    [InlineData(double.NaN, double.NaN)]
+    [InlineData(double.NegativeInfinity, double.PositiveInfinity)]
+    [InlineData(0.3, double.PositiveInfinity)]
+    [InlineData(double.PositiveInfinity, double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity, double.NegativeInfinity)]
+    public void View_Without_Finite_Bounds_Is_The_Whole_File(double start, double end)
+    {
+        // une borne infinie était déjà ramenée à la fenêtre entière ; NaN (une
+        // requête mal formée) suit le même chemin au lieu de donner une fenêtre de NaN
+        var v = new ViewWindow(start, end);
+        Assert.True(v.IsFull);
+        Assert.Equal(0.0, v.Start);
+        Assert.Equal(1.0, v.End);
+    }
+
+    [Fact]
+    public void View_Ignores_A_Missing_Anchor_Or_Offset()
+    {
+        var v = new ViewWindow(0.4, 0.6);
+        Assert.Equal(v, v.ZoomAt(double.NaN, 2.0));
+        Assert.Equal(v, v.PanBy(double.NaN));
+        Assert.Equal(v, v.CenteredOn(double.NaN));
+        // un minimum qui n'est pas un nombre garde le minimum par défaut
+        var z = ViewWindow.Full.ZoomAt(0.5, 1e9, double.NaN);
+        Assert.Equal(ViewWindow.DefaultMinSpan, z.Span, precision: 12);
+        // les infinis restent ramenés au bord
+        Assert.Equal(1.0, v.PanBy(double.PositiveInfinity).End, precision: 9);
+        Assert.Equal(0.0, v.CenteredOn(double.NegativeInfinity).Start, precision: 9);
+    }
 }

@@ -624,15 +624,20 @@ public sealed class MergeTests : IDisposable
         Write(journal, buffer, model, 100, Fill(10, 2), wait: false);
         hold.WaitReached();
 
-        // basculée : l'état ne référence plus le segment fusionné, mais il est encore sur le disque
-        Assert.False(journal.IsMerging);
+        // basculée : l'état ne référence plus le segment fusionné, mais il est encore sur le disque ; la
+        // fusion n'est finie qu'une fois supprimé ce qu'elle remplace (§7, étape 3), et il compte jusque-là
+        Assert.True(journal.IsMerging);
         Assert.Contains("00000001.seg", Files("segments"));
+        long onDisk = new FileInfo(Path.Combine(_dir, "source.bin")).Length
+                      + Directory.GetFiles(Path.Combine(_dir, "segments")).Sum(f => new FileInfo(f).Length);
+        Assert.Equal(onDisk, journal.DiskBytes);
         var wait = journal.WaitForMergesAsync();
         await Task.Delay(200);
         Assert.False(wait.IsCompleted);
 
         hold.Release();
         await wait.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(journal.IsMerging);
         Assert.Equal(["00000002.seg", "base-00000001.seg"], Files("segments"));
         Assert.Equal(model, buffer.Current.ReadAll());
     }
@@ -733,6 +738,7 @@ public sealed class MergeTests : IDisposable
         var journal = new OperationJournal(buffer, new JournalOptions { MaxUndoSteps = 1 });
         using var stop = new CancellationTokenSource();
         long reads = 0;
+        var firstRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reader = Task.Run(() =>
         {
             var bytes = new byte[data.Length];
@@ -740,8 +746,15 @@ public sealed class MergeTests : IDisposable
             {
                 buffer.Current.Read(0, bytes);
                 reads++;
+                firstRead.TrySetResult();
             }
         });
+
+        // Le lecteur a lu une fois avant les écritures. Sur une CI chargée, la tâche
+        // pouvait ne démarrer qu'une fois tout fini : aucune lecture, et le test
+        // échouait sans rien prouver (CI du 14/11).
+        await Task.WhenAny(firstRead.Task, reader).WaitAsync(TimeSpan.FromSeconds(30));
+        if (reader.IsCompleted) await reader;
 
         var model = (byte[])data.Clone();
         for (int i = 0; i < 40; i++)

@@ -150,6 +150,7 @@ internal sealed class OracleScenario(int seed)
     private string _holdStep = "début";
     private readonly SemaphoreSlim _release = new(0);
     private volatile bool _held;
+    private readonly object _holdGate = new();
 
     public int SparseMerges { get; private set; }
     public int HeldChecks { get; private set; }
@@ -424,7 +425,12 @@ internal sealed class OracleScenario(int seed)
         {
             case MergeMode.Retenue:
                 _log.Add($"relâcher une fusion{(_held ? " retenue" : "")}");
-                _release.Release();
+                // relâchée, elle n'est plus retenue dès maintenant, pas quand la tâche de fond reprend la main
+                lock (_holdGate)
+                {
+                    _held = false;
+                    _release.Release();
+                }
                 break;
             case MergeMode.Libre:
                 _log.Add("attendre les fusions");
@@ -437,7 +443,12 @@ internal sealed class OracleScenario(int seed)
     private async Task HoldAsync(string step, CancellationToken ct)
     {
         if (step != _holdStep) return;
-        _held = true;
+        lock (_holdGate)
+        {
+            // déjà relâchée : elle passe sans s'arrêter, et n'est jamais vue retenue
+            if (_release.Wait(0)) return;
+            _held = true;
+        }
         try
         {
             await _release.WaitAsync(ct);
@@ -502,8 +513,11 @@ internal sealed class OracleScenario(int seed)
         // pendant une fusion libre, rien n'est stable sur le disque : on regarde
         // l'instantané du journal, et le disque seulement une fois les fusions finies
         if (_mode == MergeMode.Libre && _journal.IsMerging && _rng.Next(2) == 0) WaitForMerges();
+        // retenue avant l'instantané, la fusion reste figée jusqu'au prochain pas : l'instantané et le
+        // disque concordent. Retenue après, elle a pu changer le disque entre les deux : rien n'est stable
+        bool held = _held;
         var snapshot = _journal.Snapshot();
-        if (snapshot.Merging && _held) HeldChecks++;
+        if (snapshot.Merging && held) HeldChecks++;
         CountBase(snapshot);
 
         // ce qu'une réouverture rechargerait (lot 5) : les compteurs de la base et des passes, en fusion comprises
@@ -531,7 +545,7 @@ internal sealed class OracleScenario(int seed)
         if (!snapshot.Merging) Assert.Equal(0, snapshot.ReservedBytes); // la nouvelle base n'est comptée que pendant sa fusion
 
         // le disque : exact une fois les fusions finies ; retenue, la fusion laisse au plus sa base en cours
-        bool stable = !snapshot.Merging || _held;
+        bool stable = !snapshot.Merging || held;
         if (!stable) return;
         var expected = snapshot.Files.Select(f => f.Name).Order().ToList();
         List<string> present, temporary;
