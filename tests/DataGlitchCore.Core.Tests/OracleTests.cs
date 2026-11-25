@@ -461,6 +461,21 @@ internal sealed class OracleScenario(int seed)
         }
     }
 
+    /// <summary>
+    /// Attend qu'une fusion retenue soit arrêtée à son étape, ou finie : relâchée
+    /// d'avance, elle passe sans s'arrêter ; interrompue par un retour, elle s'arrête là.
+    /// </summary>
+    private void WaitUntilHeldOrDone()
+    {
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (!_held && _journal.IsMerging)
+        {
+            if (waited.Elapsed > TimeSpan.FromSeconds(60))
+                throw new XunitException("La fusion retenue n'atteint pas son étape.");
+            Thread.Sleep(1);
+        }
+    }
+
     private void WaitForMerges()
     {
         if (!_journal.WaitForMergesAsync().Wait(TimeSpan.FromSeconds(60)))
@@ -519,6 +534,9 @@ internal sealed class OracleScenario(int seed)
         // retour à l'original) ; l'autre les laisse courir pendant les pas suivants. Sans tirage : la suite
         // des pas de chaque seed ne change pas.
         if (_diskChecks++ % 2 == 0) _journal.WaitForDeletions();
+        // Retenue, la fusion qu'un pas vient de lancer doit atteindre son étape avant qu'on regarde. Sans
+        // cette attente, sur une machine chargée, la vérification passait avant l'arrêt et sautait le disque
+        if (_mode == MergeMode.Retenue) WaitUntilHeldOrDone();
         // retenue avant l'instantané, la fusion reste figée jusqu'au prochain pas : l'instantané et le
         // disque concordent. Retenue après, elle a pu changer le disque entre les deux : rien n'est stable
         bool held = _held;
